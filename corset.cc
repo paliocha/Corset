@@ -326,6 +326,8 @@ void print_usage() {
          << "  -l <int>          Min reads for a link (corset/salmon_eq_classes mode). Default: 1\n"
          << "  -x <int>          Max alignments per read (corset/salmon_eq_classes mode).\n"
          << "  -t <int>          Threads for parallel hierarchical clustering. Default: auto\n"
+         << "  -v, --version     Print version and exit.\n"
+         << "  -h, --help        Print this help message and exit.\n"
          << "\n"
          << "Citation: Nadia M. Davidson and Alicia Oshlack, Corset: enabling differential gene\n"
          << "          expression analysis for de novo assembled transcriptomes, Genome Biology 2014, 15:410\n"
@@ -349,6 +351,19 @@ int main(int argc, char **argv) {
 
     // Function pointer to the input reader (BAM by default)
     ReadList *(*read_input)(string, TranscriptList *, int) = read_bam_file;
+
+    // Handle --version and --help before getopt (which only does short opts)
+    for (int i = 1; i < argc; ++i) {
+        string arg(argv[i]);
+        if (arg == "--version" || arg == "-v") {
+            cout << "Corset version " << VERSION << endl;
+            return 0;
+        }
+        if (arg == "--help" || arg == "-h") {
+            print_usage();
+            return 0;
+        }
+    }
 
     cout << "\nRunning Corset Version " << VERSION << endl;
     cout << "Using " << omp_get_max_threads()
