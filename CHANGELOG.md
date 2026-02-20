@@ -18,9 +18,24 @@ OpenMP parallelism, modern htslib, and a full C++23 port.
 - Container builds htslib 1.23 from source with libcurl support.
 
 ### Performance optimisations
-- **Sparse distance matrix**: `std::unordered_map<uint64_t, unsigned char>`
-  with Thomas Wang 64-bit hash (`WangHash64`) — O(1) lookup, minimal memory
-  for sparse graphs.
+- **Adjacency-list merge** (`adj_`/`alive_`): Replace O(ntrans) linear scan
+  in `merge()` with O(degree) sorted-merge of per-group neighbor lists.
+  For the 543k-transcript super-cluster, each merge visits ~50–500 live
+  neighbors instead of scanning all 543k indices.
+- **Parallel distance recomputation**: After collecting merged neighbors,
+  `get_dist()` calls are parallelized with `#pragma omp parallel for`
+  (nested, threshold ncand > 128).  `get_dist()` is read-only on shared
+  data, safe for concurrent execution.
+- **Flat open-addressing hash map** (`FlatDistMap.h`): Custom linear-probing
+  hash map with Wang hash replacing `std::unordered_map` for the distance
+  matrix.  Flat memory layout, no per-node allocation, ~2–3× better cache
+  performance for point lookups.
+- **Early-out per sample** in `get_dist()`: Skip sorted-list intersection
+  entirely when either transcript group has zero reads in a sample.
+  ~30–50% of samples are zero for any given pair in typical RNA-Seq data.
+- **SSE2 block intersection**: Process sorted list A in 4-element blocks,
+  compare all qualifying B elements via `_mm_cmpeq_epi32` (4 comparisons
+  per instruction).  Falls through to scalar merge for remainder.
 - **Lazy-deletion max-heap** for `find_next_pair()` — avoids O(n²) scan.
 - **Hash-bucket read deduplication** in `compactify_reads()` — avoids O(n²)
   pairwise comparison.

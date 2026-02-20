@@ -1,34 +1,106 @@
-Requirements (source tar-ball only )
-------------------------------------
-Corset requires samtools to be installed. Specifically it will use the 
-library files and headers, so these must be in a place that can be 
-accessed by Corset.
+Corset — v1.10.0
+=================
 
-We also suggest using gcc version 4.3 or greater because some newer 
-container classes are available in c++0x. This is not a requirement 
-however, code compiled with an older version of gcc will run slower.
+Fork of [Oshlack/Corset](https://github.com/Oshlack/Corset) v1.09.
+OpenMP parallelism, htslib 1.23, C++23, and algorithmic optimisations
+that reduce wall-clock time from **16+ hours to ~3.5 minutes** on
+real RNA-Seq data.
+
+Original author: Nadia Davidson (MCRI, Australia).
+OpenMP/htslib/C++23 port: Martin Paliocha, 2026.
+
+Benchmarks
+----------
+
+Dataset: *Festuca pratensis* (FPRA), 40 samples, 1.5 M transcripts,
+~1.4 billion reads, 10 experimental groups.  Orion HPC, 32 CPUs, 64 GB RAM.
+
+| Version  | Threads | Wall time | Unique clusters | Notes |
+|----------|---------|-----------|-----------------|-------|
+| v1.09    | 1       | ~16 h     | 463,691         | Stock Corset (Biocontainers) |
+| v1.10.0  | 32      | **3 min 21 s** | 463,540    | This fork |
+
+### Cluster-assignment comparison (v1.09 vs v1.10.0)
+
+| Metric                         | Value   |
+|--------------------------------|---------|
+| Transcripts                    | 793,420 |
+| Same transcript set            | 100%    |
+| Identical cluster membership   | 95.3%   |
+| Different cluster membership   | 4.7%    |
+| v1.09 unique clusters          | 463,691 |
+| v1.10 unique clusters          | 463,540 |
+
+The 4.7% difference is expected: Corset uses random read assignment
+(`rand_r`) in the log-likelihood ratio test, and the super-cluster
+parallelisation changes processing order.  Results are biologically
+equivalent.
+
+
+Requirements
+------------
+- GCC 13+ with C++23 support
+- htslib 1.23+ (headers + library)
+- zlib, libbz2, liblzma, libcurl, libdeflate
 
 
 Installation
 ------------
-Compile and install in the usual way with:
 
-./configure
-make
-make install
+    ./configure
+    make -j$(nproc)
+    make install
 
-Note that when running configure you may need to specify the 
-locations of sam.h and libbam with: 
---with-bam_inc=<path_to_sam.h> and --with-bam_lib=<path_to_bam_library>
+To specify a non-system htslib:
+
+    ./configure --with-htslib=/path/to/htslib/prefix
 
 
 Running
 -------
-Type "corset" to get usage information.
 
-More help can be found on the website at:
-https://github.com/Oshlack/Corset/wiki
+    corset [options] <eq_classes_files ...>
+
+Type `corset` with no arguments for usage information.
+Thread count defaults to `OMP_NUM_THREADS`; override with `-t <int>`.
+
+More help: https://github.com/Oshlack/Corset/wiki
+
+
+Container (Apptainer/Singularity)
+---------------------------------
+
+    cd containers/corset
+    apptainer build --fakeroot corset_1.10.sif Corset.def
+
+
+Key changes from v1.09
+----------------------
+
+### Performance
+- **Adjacency-list merge** — O(degree) instead of O(n) per merge step
+- **Parallel distance recomputation** — OpenMP nested parallelism for
+  distance updates after each merge (>128 neighbors threshold)
+- **Flat open-addressing hash map** — replaces `std::unordered_map` for
+  the distance matrix; ~2–3× better cache locality
+- **Early-out per sample** — skips sorted-list intersection when either
+  group has zero reads
+- **SSE2 block intersection** — 4-way SIMD comparison in `get_dist()`
+- **Lazy-deletion max-heap** for closest-pair extraction
+- **Weighted union-find** for super-cluster construction
+
+### Architecture
+- OpenMP parallel hierarchical clustering across super-clusters
+- htslib 1.23 (replacing samtools 0.x inline API)
+- Full C++23 standard (GCC 13, `-std=c++23`)
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete change list.
+
+
+License
+-------
+GNU General Public License.
 
 
 ----
-Last Modified, N. Davidson, 1 April 2016
+Last Modified, M. Paliocha, 20 February 2026

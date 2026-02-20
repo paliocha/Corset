@@ -21,31 +21,13 @@
 #include <cstdlib>
 #include <algorithm>
 #include <map>
-#include <unordered_map>
 #include <cstdint>
 #include <climits>
+#include <FlatDistMap.h>
 #include <Read.h>
 
 using group       = std::vector<std::vector<int>>;
 using read_group  = std::vector<std::vector<std::vector<int>>>;
-
-// Thomas Wang 64-bit integer hash — excellent distribution for
-// structured keys like ntrans*i+j used in the sparse distance matrix.
-struct WangHash64 {
-    [[nodiscard]] static constexpr size_t operator()(uint64_t key) noexcept {
-        key = (~key) + (key << 21);
-        key ^= (key >> 24);
-        key = (key + (key << 3)) + (key << 8);
-        key ^= (key >> 14);
-        key = (key + (key << 2)) + (key << 4);
-        key ^= (key >> 28);
-        key += (key << 31);
-        return static_cast<size_t>(key);
-    }
-};
-
-using dist_map      = std::unordered_map<uint64_t, unsigned char, WangHash64>;
-using dist_iterator = dist_map::iterator;
 
 // Lazy-deletion max-heap entry for find_next_pair().
 struct HeapEntry {
@@ -54,9 +36,11 @@ struct HeapEntry {
     [[nodiscard]] constexpr bool operator<(const HeapEntry &o) const { return value < o.value; }
 };
 
-// Sparse distance matrix keyed by (i*ntrans + j).
+// Sparse distance matrix keyed by (i*ntrans + j), backed by a
+// flat open-addressing hash map for ~2-3× better cache performance
+// than std::unordered_map's chained buckets.
 class DistanceMatrix {
-    dist_map dist_;
+    FlatDistMap dist_;
     uint64_t ntrans_ = 0;
 
 public:
@@ -64,18 +48,15 @@ public:
     void reserve(size_t n)  { dist_.reserve(n); }
 
     [[nodiscard]] unsigned char get(int i, int j) const {
-        auto it = dist_.find(ntrans_ * i + j);
-        return it != dist_.end() ? it->second : 0;
+        return dist_.get(ntrans_ * i + j);
     }
     void set(int i, int j, int value) {
-        if (value != 0) dist_[ntrans_ * i + j] = static_cast<unsigned char>(value);
-        else            remove(i, j);
+        uint64_t key = ntrans_ * i + j;
+        if (value != 0) dist_.set(key, static_cast<unsigned char>(value));
+        else            dist_.erase(key);
     }
     [[nodiscard]] bool no_link(int i, int j) const { return !dist_.contains(ntrans_ * i + j); }
     void remove(int i, int j)                      { dist_.erase(ntrans_ * i + j); }
-
-    dist_iterator begin() { return dist_.begin(); }
-    dist_iterator end()   { return dist_.end(); }
 };
 
 

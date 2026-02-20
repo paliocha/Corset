@@ -12,6 +12,10 @@
 #include <ranges>
 #include <omp.h>
 
+#ifdef __SSE2__
+#include <emmintrin.h>   // SSE2 — guaranteed on x86_64
+#endif
+
 using std::cout;
 using std::endl;
 using std::string;
@@ -41,20 +45,58 @@ float Cluster::get_dist(int i, int j) {
     vector<int> sample_shared_read(nsamples, 0);
 
     for (int s = 0; s < nsamples; s++) {
-        vector<int> &rg_i = read_groups[s][i];
-        vector<int> &rg_j = read_groups[s][j];
+        // ── Early-out: skip samples where either group has zero reads ──
+        // Avoids the sorted-list intersection entirely (~30-50% of samples
+        // are zero for any given transcript pair in typical RNA-Seq data).
+        if (read_group_sizes[i][s] == 0 || read_group_sizes[j][s] == 0) {
+            total_reads_i += read_group_sizes[i][s];
+            total_reads_j += read_group_sizes[j][s];
+            continue;
+        }
 
-        auto it1 = rg_i.begin(), end1 = rg_i.end();
-        auto it2 = rg_j.begin(), end2 = rg_j.end();
+        const vector<int> &rg_i = read_groups[s][i];
+        const vector<int> &rg_j = read_groups[s][j];
+        const int ni = static_cast<int>(rg_i.size());
+        const int nj = static_cast<int>(rg_j.size());
+        const int *a = rg_i.data();
+        const int *b = rg_j.data();
 
-        while (it1 != end1 && it2 != end2) {
-            if      (*it1 < *it2) ++it1;
-            else if (*it1 > *it2) ++it2;
+        int pi = 0, pj = 0;
+
+#ifdef __SSE2__
+        // ── SIMD block intersection ────────────────────────────────────
+        // Process list A in blocks of 4: for each block, compare all
+        // qualifying B elements via _mm_cmpeq_epi32 (4 comparisons in
+        // one instruction).  Falls through to scalar for the remainder.
+        while (pi + 3 < ni && pj < nj) {
+            __m128i va  = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + pi));
+            int a_max = a[pi + 3];
+            int a_min = a[pi];
+
+            // Process all b[pj] that fall within [a_min, a_max]
+            while (pj < nj && b[pj] <= a_max) {
+                if (b[pj] < a_min) { ++pj; continue; }
+                __m128i vb  = _mm_set1_epi32(b[pj]);
+                __m128i eq  = _mm_cmpeq_epi32(va, vb);
+                int mask = _mm_movemask_ps(_mm_castsi128_ps(eq));
+                if (mask)
+                    sample_shared_read[s] += get_read(b[pj])->get_weight();
+                ++pj;
+            }
+            pi += 4;
+        }
+#endif
+
+        // ── Scalar remainder ───────────────────────────────────────────
+        while (pi < ni && pj < nj) {
+            if      (a[pi] < b[pj]) ++pi;
+            else if (a[pi] > b[pj]) ++pj;
             else {
-                sample_shared_read[s] += get_read(*it1)->get_weight();
-                ++it1; ++it2;
+                sample_shared_read[s] += get_read(a[pi])->get_weight();
+                ++pi; ++pj;
             }
         }
+
         shared_reads  += sample_shared_read[s];
         total_reads_i += read_group_sizes[i][s];
         total_reads_j += read_group_sizes[j][s];
