@@ -12,29 +12,46 @@ OpenMP/htslib/C++23 port: Martin Paliocha, 2026.
 Benchmarks
 ----------
 
-Dataset: *Festuca pratensis* (FPRA), 40 samples, 1.5 M transcripts,
-~1.4 billion reads, 10 experimental groups.  Orion HPC, 32 CPUs, 64 GB RAM.
+All benchmarks run on the NMBU Orion HPC cluster (32 CPUs, 64 GB RAM).
+These are plant *de novo* transcriptome datasets from a vernalisation
+time-series experiment in temperate grasses (Poaceae).  Each species
+was sequenced across 5 time-points × 2 tissues (leaf/root) × 4
+biological replicates = 40 RNA-Seq libraries per species.  Trinity
+assemblies were quantified with Salmon (`--dumpEq`), and the
+equivalence-class files are the input to Corset.
 
-| Version  | Threads | Wall time | Unique clusters | Notes |
-|----------|---------|-----------|-----------------|-------|
-| v1.09    | 1       | ~16 h     | 463,691         | Stock Corset (Biocontainers) |
-| v1.10.0  | 32      | **3 min 21 s** | 463,540    | This fork |
+### Datasets
+
+| Species | Code | Trinity contigs | Samples | Groups | Salmon reads |
+|---------|------|-----------------|---------|--------|--------------|
+| *Festuca pratensis* (meadow fescue) | FPRA | 793,420 | 40 | 10 | ~1.4 B |
+| *Bromus maximus* (great brome)      | BMAX | 460,386 | 40 | 10 | ~0.8 B |
+
+### Runtime comparison
+
+| Dataset | Version | Threads | Wall time | Speedup | Unique clusters |
+|---------|---------|---------|-----------|---------|-----------------|
+| FPRA    | v1.09   | 1       | 11 h 11 min | 1×   | 463,691         |
+| FPRA    | v1.10.0 | 32      | **3 min 21 s** | **200×** | 463,540    |
+| BMAX    | v1.09   | 1       | 2 h 34 min  | 1×   | 270,870         |
+| BMAX    | v1.10.0 | 32      | **2 min 47 s** | **55×** | 270,773    |
 
 ### Cluster-assignment comparison (v1.09 vs v1.10.0)
 
-| Metric                         | Value   |
-|--------------------------------|---------|
-| Transcripts                    | 793,420 |
-| Same transcript set            | 100%    |
-| Identical cluster membership   | 95.3%   |
-| Different cluster membership   | 4.7%    |
-| v1.09 unique clusters          | 463,691 |
-| v1.10 unique clusters          | 463,540 |
+| Metric                         | FPRA    | BMAX    |
+|--------------------------------|---------|---------|
+| Transcripts                    | 793,420 | 460,386 |
+| Same transcript set            | 100%    | 100%    |
+| Identical cluster membership   | 95.3%   | 95.5%   |
+| Different cluster membership   | 4.7%    | 4.5%    |
+| Mean per-transcript Jaccard    | 0.98    | 0.98    |
+| v1.09 unique clusters          | 463,691 | 270,870 |
+| v1.10 unique clusters          | 463,540 | 270,773 |
 
-The 4.7% difference is expected: Corset uses random read assignment
+The 4–5% difference is expected: Corset uses random read assignment
 (`rand_r`) in the log-likelihood ratio test, and the super-cluster
-parallelisation changes processing order.  Results are biologically
-equivalent.
+parallelisation changes merge order at distance ties.  Results are
+biologically equivalent.
 
 
 Requirements
