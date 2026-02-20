@@ -354,6 +354,9 @@ int main(int argc, char **argv) {
     cout << "Using " << omp_get_max_threads()
          << " threads (set OMP_NUM_THREADS or use -t to override)" << endl;
 
+    // Allow two levels of parallelism: outer (super-clusters) + inner (merge)
+    omp_set_max_active_levels(2);
+
     // Parse command-line options
     while ((c = getopt(argc, argv, "f:p:d:n:g:D:Im:r:i:l:x:t:")) != EOF) {
         switch (c) {

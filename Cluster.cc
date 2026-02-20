@@ -98,6 +98,9 @@ float Cluster::get_dist(int i, int j) {
 // ── Merge cluster j into cluster i ──────────────────────────────────
 
 void Cluster::merge(int i, int j) {
+    // Mark j as dead
+    alive_[j] = false;
+
     // Merge group membership
     groups[i].insert(groups[i].end(), groups[j].begin(), groups[j].end());
     groups[j].clear();
@@ -135,32 +138,71 @@ void Cluster::merge(int i, int j) {
     }
     read_group_sizes[j].clear();
 
-    // Update distance matrix — i absorbs j
-    int ntrans = n_trans();
+    // ── Collect live neighbors of i ∪ j (Tier 1: O(degree) not O(n)) ──
+    vector<int> candidates;
+    {
+        // Sorted merge of adj_[i] and adj_[j], skipping dead entries and i,j
+        auto &ai = adj_[i];
+        auto &aj = adj_[j];
+        candidates.reserve(ai.size() + aj.size());
 
-    for (int k = 0; k < i; k++) {
-        if (dist.no_link(i, k) && ((k < j && dist.no_link(j, k)) || (j < k && dist.no_link(k, j))))
-            continue;
-        if (dist.get(i, k) == UCHAR_MAX &&
-            ((j < k && dist.get(k, j) == UCHAR_MAX) || (j > k && dist.get(j, k) == UCHAR_MAX)))
-            continue;
-        unsigned char d = static_cast<unsigned char>(get_dist(i, k) * UCHAR_MAX);
-        dist.set(i, k, d);
-        if (d > 0) pq_.push({d, i, k});
-    }
-    for (int k = i + 1; k < ntrans; k++) {
-        if (dist.no_link(k, i) && dist.no_link(k, j))
-            continue;
-        if (dist.get(k, i) == UCHAR_MAX && dist.get(k, j) == UCHAR_MAX)
-            continue;
-        unsigned char d = static_cast<unsigned char>(get_dist(i, k) * UCHAR_MAX);
-        dist.set(k, i, d);
-        if (d > 0) pq_.push({d, k, i});
+        auto p = ai.begin(), pe = ai.end();
+        auto q = aj.begin(), qe = aj.end();
+        while (p != pe && q != qe) {
+            if (*p < *q)      { if (alive_[*p] && *p != j) candidates.push_back(*p); ++p; }
+            else if (*p > *q) { if (alive_[*q] && *q != i) candidates.push_back(*q); ++q; }
+            else              { if (alive_[*p] && *p != i && *p != j) candidates.push_back(*p); ++p; ++q; }
+        }
+        while (p != pe) { if (alive_[*p] && *p != j) candidates.push_back(*p); ++p; }
+        while (q != qe) { if (alive_[*q] && *q != i) candidates.push_back(*q); ++q; }
     }
 
-    // Remove j's entries
-    for (int k = 0; k < j; k++) dist.remove(j, k);
-    for (int k = j + 1; k < ntrans; k++) dist.remove(k, j);
+    // ── Tier 2: Parallel distance recomputation ────────────────────────
+    const int ncand = static_cast<int>(candidates.size());
+    vector<unsigned char> new_dists(ncand);
+
+    // Use nested parallelism only for big clusters (avoids overhead for tiny ones)
+    #pragma omp parallel for schedule(static) if(ncand > 128)
+    for (int idx = 0; idx < ncand; idx++) {
+        new_dists[idx] = static_cast<unsigned char>(get_dist(i, candidates[idx]) * UCHAR_MAX);
+    }
+
+    // ── Sequential: apply distance updates, rebuild adj_[i] ────────────
+    // Remove j's old entries from the distance matrix
+    for (int k : adj_[j]) {
+        if (!alive_[k]) continue;
+        if (k < j) dist.remove(j, k);
+        else       dist.remove(k, j);
+    }
+    adj_[j].clear();
+
+    // Remove i's old entries, then insert new ones
+    for (int k : adj_[i]) {
+        if (!alive_[k]) continue;
+        if (k < i) dist.remove(i, k);
+        else       dist.remove(k, i);
+    }
+
+    // Rebuild adj_[i] with fresh distances
+    adj_[i].clear();
+    adj_[i].reserve(ncand);
+    for (int idx = 0; idx < ncand; idx++) {
+        int k = candidates[idx];
+        unsigned char d = new_dists[idx];
+        if (d > 0) {
+            // Store in canonical order (higher index, lower index)
+            if (k > i) dist.set(k, i, d);
+            else       dist.set(i, k, d);
+            pq_.push({d, std::max(i, k), std::min(i, k)});
+            adj_[i].push_back(k);
+            // Add i to k's neighbor list (maintain sorted invariant)
+            auto &ak = adj_[k];
+            auto pos = std::lower_bound(ak.begin(), ak.end(), i);
+            if (pos == ak.end() || *pos != i)
+                ak.insert(pos, i);
+        }
+    }
+    std::ranges::sort(adj_[i]);
 }
 
 
@@ -362,13 +404,25 @@ void Cluster::initialise_matrix() {
     auto [first, last] = std::ranges::unique(nz_pairs);
     nz_pairs.erase(first, last);
 
-    // Compute distances and seed the max-heap
+    // Initialise adjacency lists and alive flags
+    adj_.resize(ntrans);
+    alive_.assign(ntrans, true);
+
+    // Compute distances and seed the max-heap + adjacency lists
     dist.reserve(nz_pairs.size());
-    for (auto &p : nz_pairs) {
-        unsigned char d = static_cast<unsigned char>(get_dist(p.first, p.second) * UCHAR_MAX);
-        dist.set(p.first, p.second, d);
-        if (d > 0) pq_.push({d, p.first, p.second});
+    for (auto &[hi, lo] : nz_pairs) {
+        unsigned char d = static_cast<unsigned char>(get_dist(hi, lo) * UCHAR_MAX);
+        dist.set(hi, lo, d);
+        if (d > 0) {
+            pq_.push({d, hi, lo});
+            adj_[hi].push_back(lo);
+            adj_[lo].push_back(hi);
+        }
     }
+
+    // Sort adjacency lists for efficient set-union in merge()
+    for (int i = 0; i < ntrans; i++)
+        std::ranges::sort(adj_[i]);
 }
 
 

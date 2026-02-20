@@ -90,6 +90,12 @@ class Cluster {
     DistanceMatrix dist;
     std::priority_queue<HeapEntry> pq_;
 
+    // Adjacency lists: adj_[i] = sorted list of live neighbors with non-zero
+    // distance to group i.  Replaces the O(ntrans) scan in merge() with an
+    // O(degree) traversal — decisive for the 500k-transcript super-cluster.
+    std::vector<std::vector<int>> adj_;
+    std::vector<bool>             alive_;  // false once a group is merged away
+
     int id_ = 0;
     std::vector<int> sample_groups;
 
