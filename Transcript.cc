@@ -4,50 +4,25 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-//#include <string>
-//#include <vector>
-//#include <sstream>
-//#include <cstdlib>
-//#include <algorithm>
-//#include <StringSet.h>
 #include <Transcript.h>
 #include <Read.h>
 
-using namespace std;
+void Transcript::remove() {
+    for (auto *r : reads_)
+        r->remove(this);
+}
 
-// initialise the number of samples to 0.
-// this will be set later on.
-int Transcript::samples=0;
-int Transcript::groups=0;
-int Transcript::min_counts=10;
-int Transcript::min_reads_for_link=1;
-int Transcript::max_alignments=-1;
+void Transcript::add_read(Read *read) {
+    reads_.push_back(read);
+}
 
-void Transcript::remove(){
-    for(int r=0; r<reads_.size() ; r++)
-      reads_.at(r)->remove(this);
-};
-
-Transcript::Transcript(string name){
-    name_=name;
-    //    reached_min_counts_=false;
-};
-
-void Transcript::add_read( Read * read ){ 
-  //  if(reads_.size()>=min_counts)//{
-    //    reads_.clear();
-    //   reached_min_counts_=true;
-    //} else {
-    reads_.push_back(read) ; 
-    //  }
-};
-
-bool Transcript::reached_min_counts(){
-  int counts=0;
-  for(int i=0; i<reads_.size(); i++){
-    counts+=reads_.at(i)->get_weight();
-    if(counts >= min_counts) return true;
-  }
-  return false;
+bool Transcript::reached_min_counts() const {
+    int counts = 0;
+    for (auto *r : reads_) {
+        counts += r->get_weight();
+        if (counts >= min_counts)
+            return true;
+    }
+    return false;
 }
 

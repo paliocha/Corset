@@ -4,92 +4,47 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-/**
- * This is a general container class which is used to store a pointer to an 
- * object along with it's associated name (or ID string). This provides
- * a convenient and fast way of storing the read information from the bam file - 
- * as a Read object pointer with it's ID string as the key. Similarly the
- * transcript information is stored as a kep, value pair of transcript name
- * and a pointer to a Transcript object. These objects are only used in the
- * first half of the program. Once the "super" clusters have been set-up, the
- * the StringSets are destroyed to conserve memory because it is not longer
- * necessary to access the objects by their IDs.
- *
- * This template is used in ReadList.h and ClusterList.h
- *
- * Author: Nadia Davidson, nadia.davidson@mcri.edu.au
- * Last Modified: 3 May 2013
- */
+// A general container class storing a pointer to an object alongside its
+// name (ID string).  Used for Read and Transcript lookup by name during
+// the first half of the program; destroyed once super-clusters are built
+// to conserve memory.
+//
+// Original author: Nadia Davidson
 
-#ifndef STRINGSET_H
-#define STRINGSET_H
+#pragma once
 
 #include <string>
 #include <cstdlib>
-
-#ifndef UNORDEREDMAP
-#include <map>
-#else
 #include <unordered_map>
-#endif
 
-using namespace std;
+template <class T>
+class StringSet {
+    using map_type = std::unordered_map<std::string, T *>;
 
-template <class T > class StringSet {
-  
-#ifndef UNORDEREDMAP
-  typedef map< string, T * > mymap;
-#else
-  typedef unordered_map< string, T * > mymap;
-#endif
+    map_type set_map;
 
- private:
-  /** The underlying data structure is a map **/
-  mymap set_map;
-  
- public:  
-  typedef typename mymap::iterator iterator;
+public:
+    using iterator = typename map_type::iterator;
 
-  /** Using the key string, look up the pointer to the object. 
-      For example use the read ID to get a Read * or a 
-      transcript ID to get a Transcript *.
-   **/
-  T * find(string & name){
-    iterator it;
-    it = set_map.find(name);
-    if(it!=set_map.end())
-      return it->second;
-    return NULL;
-  };
-
-  /** Create a new object, insert it and its ID string into the map,
-      then return the pointer to the object. Check to see if the name
-      already exisits and if it does, just return the already exisiting
-      object pointer.
-   **/
-  T * insert(string name){
-    T * look_up = find(name); 
-    if(look_up!=NULL)
-      return look_up;
-    else{
-      T * pt = new T(name);
-      set_map[name]=pt;
-      return pt;
+    // Look up an object by name.  Returns nullptr if not found.
+    [[nodiscard]] T *find(const std::string &name) {
+        auto it = set_map.find(name);
+        return (it != set_map.end()) ? it->second : nullptr;
     }
-  };
-  
-  iterator begin(){
-    return set_map.begin();
-  };
 
-  iterator end(){
-    return set_map.end();
-  };
+    // Insert a new object keyed by name.  If the name already exists,
+    // return the existing object pointer.
+    // Uses try_emplace for a single hash lookup (find + insert combined).
+    T *insert(const std::string &name) {
+        auto [it, inserted] = set_map.try_emplace(name, nullptr);
+        if (!inserted)
+            return it->second;
+        it->second = new T(name);
+        return it->second;
+    }
 
-  void clear(){ set_map.clear(); } ;
-
-  int size(){ return set_map.size(); } ;
+    iterator begin() { return set_map.begin(); }
+    iterator end()   { return set_map.end(); }
+    void clear()     { set_map.clear(); }
+    [[nodiscard]] int size() const { return static_cast<int>(set_map.size()); }
 };
-
-
-#endif

@@ -4,59 +4,45 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-/**
- * A class to store the names of transcripts.
- * This allows transcripts to be idenfitied by a pointer to their "pair" 
- * rather than using the full name (which is a string). This makes the code
- * run faster and require less memory.
- *
- * Author: Nadia Davidson
- * Modified: 3 May 3013
- */
+// Stores transcript names and temporary read-back-references.
+// Allows transcripts to be identified by pointer rather than
+// string, which is faster and uses less memory.
+//
+// Original author: Nadia Davidson
 
-#ifndef TRANSCRIPT_H
-#define TRANSCRIPT_H
+#pragma once
 
 #include <string>
 #include <vector>
-#include <sstream>
-#include <cstdlib>
-#include <algorithm>
 #include <StringSet.h>
-
-using namespace std;
 
 class Read;
 
-class Transcript{
-  string name_;
-  int pos_; // used later by Cluster
-  vector<Read*> reads_; //temporary vector so we can quickly remove the alignments
-                 //for transcripts with less then min_count hits.
-  //  bool reached_min_counts_;
+class Transcript {
+    std::string name_;
+    int pos_ = 0;                  // position index set by Cluster::initialise_matrix()
+    std::vector<Read *> reads_;    // back-references for min-count filtering
 
- public:
-  Transcript(){name_="";};
-  Transcript(string name);
+public:
+    Transcript()                          : name_("") {}
+    explicit Transcript(const std::string &name) : name_(name) {}
 
-  string get_name(){return name_; } ;
-  void pos(int position){pos_=position;};
-  int pos(){return pos_;};
-  void add_read( Read * read );
-  bool reached_min_counts();
-  //return reached_min_counts_; };
+    [[nodiscard]] const std::string &get_name() const { return name_; }
+    void  pos(int position)             { pos_ = position; }
+    [[nodiscard]] int pos() const       { return pos_; }
 
-  void remove(); //remove myself from the reads lists .. 
+    void add_read(Read *read);
+    [[nodiscard]] bool reached_min_counts() const;
+    void remove();   // remove this transcript from its reads' alignment lists
 
-  static int samples;
-  static int groups;
-  static int min_counts;
-  static int min_reads_for_link;
-  static int max_alignments;
+    std::vector<Read *> *get_reads() { return &reads_; }
 
-  vector<Read*> * get_reads(){ return &reads_ ; } ;
+    // Global configuration (set once from CLI args)
+    static inline int samples          = 0;
+    static inline int groups           = 0;
+    static inline int min_counts       = 10;
+    static inline int min_reads_for_link = 1;
+    static inline int max_alignments   = -1;
 };
 
-typedef StringSet<Transcript> TranscriptList;
-
-#endif
+using TranscriptList = StringSet<Transcript>;

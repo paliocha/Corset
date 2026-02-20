@@ -5,109 +5,141 @@
 // analysis.
 
 #include <iostream>
-#include <string>
 #include <vector>
-#include <cstdlib>
-#include <algorithm>
+#include <map>
+#include <omp.h>
 #include <MakeClusters.h>
 
-using namespace std;
+using std::cout;
+using std::endl;
+using std::map;
+using std::string;
+using std::vector;
 
 
-pair< Transcript * const, Cluster * > * MakeClusters::getMapElement(Transcript * trans){
-  //  StringSet<Cluster>::iterator it=transMap.find(trans);
-  map< Transcript*, Cluster*>::iterator it=transMap.find(trans);
-  if(it!=transMap.end())
-    return &(*it);
-  Cluster * clust = new Cluster();
-  clust->add_tran(trans);
-  clusterList.push_back(clust);
-  pair< map< Transcript *, Cluster*>::iterator,bool> newTrans=transMap.insert( 
-				       		      pair< Transcript *, Cluster* >(trans,clust));
-  return &(*(newTrans.first));
-};
+// ── Find-or-create the cluster for a transcript ─────────────────────
 
-void MakeClusters::checkAgainstCurrentCluster(Transcript * trans){
-  //compare the current transcript's cluster to the "current" cluster.
-  Cluster * this_cluster=getMapElement(trans)->second;
-  //"this_cluster" should match "current_cluster"
-  if(this_cluster==current_cluster) return;
-  
-  //otherwise, change the cluster of all transcripts in "this_cluster" to "current_cluster"
-  for(int i=0; i<this_cluster->n_trans(); i++){
-    transMap[this_cluster->get_tran(i)]=current_cluster;
-    current_cluster->add_tran(this_cluster->get_tran(i));
-  }
-  //and copy all the reads across too
-  for(int i=0; i<this_cluster->n_reads(); i++){
-    current_cluster->add_read(this_cluster->get_read(i));
-  }
-  //clean up
-  clusterList.erase(find(clusterList.begin(),clusterList.end(),this_cluster));
-  delete this_cluster;
-};
+std::pair<Transcript *const, Cluster *> *
+MakeClusters::getMapElement(Transcript *trans) {
+    auto it = transMap.find(trans);
+    if (it != transMap.end())
+        return &(*it);
 
-void MakeClusters::makeSuperClusters(vector<ReadList*> & readLists){
-  //loop through each read: 
-  int i=0;
-  for(int sample=0; sample<readLists.size(); sample++){
-    ReadList reads=*(readLists.at(sample));
+    Cluster *clust = new Cluster();
+    clust->add_tran(trans);
+    clust->clusterList_index = static_cast<int>(clusterList.size());
+    clusterList.push_back(clust);
 
-    vector< Read* >::iterator rIt;
-    for( rIt=reads.begin() ; rIt != reads.end(); rIt++ ){
-      Read * r = *rIt ; 
-      vector< Transcript * >::iterator tIt=r->align_begin() ;
-      vector< Transcript * >::iterator tIt_end=r->align_end() ;
-      
-      //     if(r->get_weight() >= 0 && distance(tIt,tIt_end) <= 50){
-	for( ; tIt != tIt_end; tIt++ ){
-	  Transcript * trans=*tIt;
-	  if(tIt==r->align_begin()){
-	    setCurrentCluster(trans);
-	    current_cluster->add_read(r);
-	  }
-	  else
-	    checkAgainstCurrentCluster(trans);
-	}
-	  //	}
-      if(i % 100000 == 0)
-	cout << float(i)/float(1000000) << " million equivalence classes read" <<endl;
-      i++;
+    auto result = transMap.emplace(trans, clust);
+    return &(*result.first);
+}
+
+
+// ── Weighted union-find merge ───────────────────────────────────────
+// Always absorb smaller cluster into larger to guarantee each
+// transcript changes cluster at most O(log n) times total.
+
+void MakeClusters::checkAgainstCurrentCluster(Transcript *trans) {
+    Cluster *this_cluster = getMapElement(trans)->second;
+    if (this_cluster == current_cluster) return;
+
+    Cluster *big   = current_cluster;
+    Cluster *small = this_cluster;
+    if (small->n_trans() > big->n_trans()) {
+        std::swap(big, small);
+        current_cluster = big;
     }
-    delete readLists.at(sample);
-  }
-  //clean up 
-  readLists.clear();
-  transMap.clear();
-}
 
-void MakeClusters::processSuperClusters(map<float,string> & distance_thresholds, vector<int> & groups){
-  //now do the hierarchical clustering...
-  cout << "Starting hierarchial clustering..." << endl;
-  for(int i=0; clusterList.size()>0; i++){
-    if(i % 1000 == 0)
-      cout << float(i)/float(1000) << " thousand clusters done" <<endl;
-    Cluster * back = clusterList.back();
-    back->set_id(i);
-    back->set_sample_groups(groups);
-    back->cluster(distance_thresholds);
-    //    back->print_alignments();
+    // Move all transcripts from small → big
+    for (int i = 0; i < small->n_trans(); i++) {
+        transMap[small->get_tran(i)] = big;
+        big->add_tran(small->get_tran(i));
+    }
+    // Copy all reads across
+    for (int i = 0; i < small->n_reads(); i++)
+        big->add_read(small->get_read(i));
+
+    // O(1) removal: swap with back and pop
+    int idx = small->clusterList_index;
+    Cluster *back = clusterList.back();
+    clusterList[idx] = back;
+    back->clusterList_index = idx;
     clusterList.pop_back();
-    delete back;
-  }
+    delete small;
 }
 
-MakeClusters::MakeClusters(vector<ReadList*> & readLists, 
-			   map<float,string> & distance_thresholds, 
-			   vector<int> & groups){
 
-  //stage 1: process all the reads and looked for shared hits.
-  //groups all transcripts which share at least one read
-  makeSuperClusters(readLists);
-  //stage 2: loop over each of the newly created groups (super clusters)
-  //and perform the hierarchical clustering
-  processSuperClusters(distance_thresholds,groups);
+// ── Stage 1: Build super-clusters from shared reads ─────────────────
 
-};
+void MakeClusters::makeSuperClusters(vector<ReadList *> &readLists) {
+    if (!readLists.empty())
+        transMap.reserve(1 << 20);  // 1M buckets — will grow if needed
+
+    int ec_count = 0;
+    for (size_t sample = 0; sample < readLists.size(); sample++) {
+        ReadList reads = *(readLists[sample]);
+
+        for (Read *r : reads) {
+            auto tIt     = r->align_begin();
+            auto tIt_end = r->align_end();
+
+            for (auto t = tIt; t != tIt_end; ++t) {
+                if (t == tIt) {
+                    setCurrentCluster(*t);
+                    current_cluster->add_read(r);
+                } else {
+                    checkAgainstCurrentCluster(*t);
+                }
+            }
+
+            if (ec_count % 100000 == 0)
+                cout << static_cast<float>(ec_count) / 1e6f
+                     << " million equivalence classes read" << endl;
+            ec_count++;
+        }
+        delete readLists[sample];
+    }
+
+    readLists.clear();
+    transMap.clear();
+}
 
 
+// ── Stage 2: Parallel hierarchical clustering ───────────────────────
+
+void MakeClusters::processSuperClusters(map<float, string> &thresholds,
+                                        vector<int> &groups) {
+    int n = static_cast<int>(clusterList.size());
+    cout << "Starting hierarchical clustering of " << n
+         << " super-clusters..." << endl;
+
+    int done = 0;
+    #pragma omp parallel for schedule(dynamic) shared(done)
+    for (int i = 0; i < n; i++) {
+        Cluster *c = clusterList[i];
+        c->set_id(i);
+        c->set_sample_groups(groups);
+        c->cluster(thresholds);
+        delete c;
+
+        #pragma omp atomic
+        done++;
+        if (done % 1000 == 0) {
+            #pragma omp critical(print)
+            cout << done << " of " << n << " super-clusters done" << endl;
+        }
+    }
+    clusterList.clear();
+}
+
+
+// ── Constructor: orchestrate both stages ────────────────────────────
+
+MakeClusters::MakeClusters(vector<ReadList *> &readLists,
+                           map<float, string> &thresholds,
+                           vector<int> &groups) {
+    // Stage 1: group transcripts sharing at least one read
+    makeSuperClusters(readLists);
+    // Stage 2: hierarchical clustering within each super-cluster
+    processSuperClusters(thresholds, groups);
+}

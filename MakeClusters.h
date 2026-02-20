@@ -4,41 +4,41 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-#ifndef MAKECLUSTERS_H
-#define MAKECLUSTERS_H
+// Builds super-clusters (stage 1) via weighted union-find, then
+// dispatches parallel hierarchical clustering (stage 2).
+//
+// Original author: Nadia Davidson
 
-#include <iostream>
-#include <string>
+#pragma once
+
 #include <vector>
-#include <cstdlib>
-#include <algorithm>
+#include <unordered_map>
 #include <map>
+#include <string>
 #include <Cluster.h>
 #include <Read.h>
 #include <Transcript.h>
 
-using namespace std;
-
 class MakeClusters {
-   private:
-     vector<Cluster*> clusterList;
-     Cluster * current_cluster;
+    std::vector<Cluster *> clusterList;
+    Cluster *current_cluster = nullptr;
 
-   public:
-     void setCurrentCluster(Transcript * trans){ current_cluster=getMapElement(trans)->second; };
+    std::unordered_map<Transcript *, Cluster *> transMap;
 
- private:
-     map< Transcript *, Cluster * > transMap;
-     pair< Transcript * const, Cluster * > * getMapElement(Transcript * trans);
-     void checkAgainstCurrentCluster(Transcript * trans);
-     void makeSuperClusters(vector<ReadList*> & readLists);
-     void processSuperClusters(map<float,string> & distance_thresholds, vector<int> & groups);
-     
- public:
-     MakeClusters(vector<ReadList*> & readLists, map<float,string> & distance_thresholds, vector<int> & groups);
-     
+    // Find-or-create the cluster for a transcript
+    std::pair<Transcript *const, Cluster *> *getMapElement(Transcript *trans);
+
+    void setCurrentCluster(Transcript *trans) {
+        current_cluster = getMapElement(trans)->second;
+    }
+    void checkAgainstCurrentCluster(Transcript *trans);
+
+    void makeSuperClusters(std::vector<ReadList *> &readLists);
+    void processSuperClusters(std::map<float, std::string> &thresholds,
+                              std::vector<int> &groups);
+
+public:
+    MakeClusters(std::vector<ReadList *> &readLists,
+                 std::map<float, std::string> &thresholds,
+                 std::vector<int> &groups);
 };
-
-#endif
-
-

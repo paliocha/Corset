@@ -1,0 +1,9 @@
+# Build artifacts
+*.o
+*~
+corset
+corset_fasta_ID_changer
+Makefile
+config.log
+config.status
+autom4te.cache/

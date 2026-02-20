@@ -4,112 +4,115 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-#include<Read.h>
+#include <Read.h>
+#include <unordered_map>
 
-bool Read::has_same_alignments( Read * r){
+using std::unordered_map;
+using std::vector;
+using std::string;
+using std::ofstream;
+using std::endl;
+using std::cout;
 
-  if(r->get_trans_hash()!=get_trans_hash()) return false;
-  return(r->get_sample()==get_sample());
-
-};
-
-
-
-void ReadList::add_alignment(string read, string trans, int sample){
-  //find the transcript id if it already exists:
-  Read * r = reads_map->insert(read);
-  Transcript * t = transcript_list->insert(trans);
-  //don't try to insert an alignment if 1. it already exists or
-  //2. if the transcript ID is not in the TranscriptList.
-  if( !r->has(t) ){
-    r->add_alignment(t);
-    r->set_sample(sample);
-  }
-};
-
-//This is the method called when we read equivalence class files as input.
-//reads are already 'compact', so we can add to the read_vector instead of the map.
-void ReadList::add_alignment(vector<string> trans_names, int sample, int weight){
-
-  //make the new read
-  Read * r = new Read();
-  reads_vector.push_back(r);
-  r->set_sample(sample);
-  r->set_weight(weight); //this read represents mutliple reads in the original bam
-  
-  //loop over all the transcripts that this read aligns to
-  vector<string>::iterator itrTrans = trans_names.begin();
-  for(; itrTrans!=trans_names.end(); itrTrans++){
-    //find the transcript object with the name  
-    Transcript * t = transcript_list->insert(*itrTrans);
-    r->add_alignment(t);
-  }
-};
-
-//save memory by reducing all the reads of a sample into
-//a vector of "compact reads". compact reads are stored in
-//regular read object, with a weight equal to the number
-//of regular reads. This saves a lot of RAM if reads from multiple
-//samples are processed. The map obect (StringSet) with read IDs
-//is also destroyed to save memory.
-void ReadList::compactify_reads(TranscriptList * trans, string outputReadsName){ 
-
-  // first lets sort the alignments for each read
-  // and calculate a hash value to be used when comparing alignments
-  StringSet<Read>::iterator itr=reads_map->begin();
-  for(; itr!=reads_map->end(); itr++){ 
-    itr->second->sort_alignments(); 
-    itr->second->set_trans_hash();
-  }
-
-  // then loop over the transcripts
-  TranscriptList::iterator transItr = trans->begin();
-  for(;transItr!=trans->end(); transItr++){
-    vector<Read*> * reads = transItr->second->get_reads();
-    int reads_size=reads->size();
-    for(int i=0; i < (reads_size - 1); i++){
-      if(reads->at(i)->get_weight()!=0){
-	for(int j=(i+1) ; j < reads_size ; j++){
-	  if( reads->at(j)->get_weight()!=0 &&
-	      reads->at(i)->has_same_alignments(reads->at(j))){
-	    int new_weight = reads->at(i)->get_weight() + reads->at(j)->get_weight() ;
-	    reads->at(i)->set_weight( new_weight ) ; //add to the weight
-	    reads->at(j)->set_weight( 0 );  //set the weight of duplicates to zero
-	  }
-	}
-      }
+// BAM path: look up read + transcript by name
+void ReadList::add_alignment(const string &read, const string &trans, int sample) {
+    Read *r       = reads_map->insert(read);
+    Transcript *t = transcript_list->insert(trans);
+    if (!r->has(t)) {
+        r->add_alignment(t);
+        r->set_sample(sample);
     }
-    //now remove the reads with weight=0 from each transcript's list of reads
-    for(int k=reads->size(); k > 0 ; --k){
-      if(reads->at(k-1)->get_weight()==0)
-	reads->erase(reads->begin()+k-1 );
-    }
-  }
-
-  for(itr=reads_map->begin(); itr!=reads_map->end(); itr++){
-    //remove zero weight reads at the end...
-    Read * r = itr->second;
-    if(r->get_weight()!=0 )
-      reads_vector.push_back( r );
-    else 
-      delete r;
-  }
-  reads_map->clear();
-  delete reads_map ;
 }
 
-void ReadList::write(string outputReadsName){
-  //now output the read mapping to file if requested
-  ofstream readFile;
-  readFile.open(outputReadsName);
-  vector<Read *>::iterator read;
-  for(read=begin(); read!=end(); read++){
-    readFile << (*read)->get_weight() ;
-    vector < Transcript * >::iterator trans;
-    for(trans=(*read)->align_begin(); trans!=(*read)->align_end(); trans++)
-      readFile << "\t" << (*trans)->get_name();
-    readFile << endl;
-  }
-  readFile.close();
-  cout << "Done writing "<< outputReadsName << endl;
+// Corset / string eq_class path: transcript names resolved via StringSet
+void ReadList::add_alignment(vector<string> &trans_names, int sample, int weight) {
+    Read *r = new Read();
+    reads_vector.push_back(r);
+    r->set_sample(sample);
+    r->set_weight(weight);
+    for (auto &name : trans_names) {
+        Transcript *t = transcript_list->insert(name);
+        r->add_alignment(t);
+    }
+}
+
+// Salmon eq_class fast path: Transcript pointers already resolved
+void ReadList::add_alignment_ptrs(vector<Transcript *> &trans_ptrs, int sample, int weight) {
+    Read *r = new Read();
+    reads_vector.push_back(r);
+    r->set_sample(sample);
+    r->set_weight(weight);
+    for (Transcript *t : trans_ptrs)
+        r->add_alignment(t);
+}
+
+// Merge reads with identical alignment sets into weighted compact reads.
+// Uses hash-bucket grouping to avoid O(n^2) pairwise comparison.
+void ReadList::compactify_reads(TranscriptList *trans, const string & /*outputReadsName*/) {
+    // Sort alignments and compute hashes for all reads
+    for (auto &[name, read] : *reads_map) {
+        read->sort_alignments();
+        read->set_trans_hash();
+    }
+
+    // For each transcript, group its reads by hash and merge duplicates
+    for (auto &[name, transcript] : *trans) {
+        vector<Read *> *reads = transcript->get_reads();
+        int reads_size = static_cast<int>(reads->size());
+        if (reads_size < 2) continue;
+
+        // Build hash → indices map
+        unordered_map<uintptr_t, vector<int>> hash_buckets;
+        hash_buckets.reserve(reads_size);
+        for (int i = 0; i < reads_size; i++) {
+            if ((*reads)[i]->get_weight() != 0)
+                hash_buckets[(*reads)[i]->get_trans_hash()].push_back(i);
+        }
+
+        // Only compare within each hash bucket
+        for (auto &[hash, indices] : hash_buckets) {
+            for (int bi = 0; bi < static_cast<int>(indices.size()) - 1; bi++) {
+                Read *ri = (*reads)[indices[bi]];
+                if (ri->get_weight() == 0) continue;
+                for (int bj = bi + 1; bj < static_cast<int>(indices.size()); bj++) {
+                    Read *rj = (*reads)[indices[bj]];
+                    if (rj->get_weight() != 0 && ri->has_same_alignments(rj)) {
+                        ri->set_weight(ri->get_weight() + rj->get_weight());
+                        rj->set_weight(0);
+                    }
+                }
+            }
+        }
+
+        // Compact: remove zero-weight reads from this transcript's list
+        int write_pos = 0;
+        for (int k = 0; k < static_cast<int>(reads->size()); k++) {
+            if ((*reads)[k]->get_weight() != 0)
+                (*reads)[write_pos++] = (*reads)[k];
+        }
+        reads->resize(write_pos);
+    }
+
+    // Move surviving reads into the flat vector; delete zero-weight reads
+    for (auto &[name, r] : *reads_map) {
+        if (r->get_weight() != 0)
+            reads_vector.push_back(r);
+        else
+            delete r;
+    }
+    reads_map->clear();
+    delete reads_map;
+    reads_map = nullptr;
+}
+
+void ReadList::write(const string &outputReadsName) {
+    ofstream readFile(outputReadsName);
+    for (Read *r : reads_vector) {
+        readFile << r->get_weight();
+        for (auto trans = r->align_begin(); trans != r->align_end(); ++trans)
+            readFile << "\t" << (*trans)->get_name();
+        readFile << "\n";
+    }
+    readFile.close();
+    cout << "Done writing " << outputReadsName << endl;
 }
