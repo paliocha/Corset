@@ -1,6 +1,6 @@
 # Changelog — corset-omp
 
-## 1.10-omp (2026-02-20)
+## 1.10.0 (2026-02-20)
 
 Fork of [Oshlack/Corset](https://github.com/Oshlack/Corset) v1.09 with
 OpenMP parallelism, modern htslib, and a full C++23 port.
