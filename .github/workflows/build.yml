@@ -1,0 +1,35 @@
+name: C/C++ Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential autoconf \
+          libhts-dev \
+          zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev libdeflate-dev
+
+    - name: Configure
+      run: |
+        autoconf
+        ./configure
+
+    - name: Build
+      run: make -j$(nproc)
+
+    - name: Verify binaries
+      run: |
+        ./corset --version || true
+        ./corset_fasta_ID_changer --version || true
