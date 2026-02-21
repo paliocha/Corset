@@ -1,12 +1,15 @@
-// Cache-friendly open-addressing hash map with linear probing.
-// Keys: uint64_t, Values: unsigned char.
+// Cache-friendly open-addressing hash map with linear
+// probing.  Keys: uint64_t, Values: unsigned char.
 //
-// ~2-3× faster than std::unordered_map for point operations: no pointer
-// chasing, no per-node heap allocation, better prefetch behavior.
+// ~2–3× faster than std::unordered_map for point
+// operations: no pointer chasing, no per-node heap
+// allocation, better prefetch behavior.
 //
-// Uses sentinel keys (EMPTY/TOMBSTONE) instead of a separate metadata
-// array.  Safe key range: [0, UINT64_MAX-2].  The distance-matrix keys
-// (ntrans*i + j, ntrans ≤ 2M, i,j < ntrans) are well within range.
+// Uses sentinel keys (EMPTY/TOMBSTONE) instead of a
+// separate metadata array.  Tombstones are tracked to
+// keep the effective load factor accurate.  Safe key
+// range: [0, UINT64_MAX-2].  The distance-matrix keys
+// (ntrans*i+j, ntrans ≤ 2M) are well within range.
 //
 // Author: Martin Paliocha, martin.paliocha@nmbu.no
 // Last modified 21 February 2026

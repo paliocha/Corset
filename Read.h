@@ -5,8 +5,14 @@
 // analysis.
 
 // Read and ReadList classes.
-// A Read records the transcript alignments for one (possibly weighted)
-// equivalence class, tagged with a sample index.
+//
+// A Read records the transcript alignments for one (possibly
+// weighted) equivalence class, tagged with a sample index.
+// ReadList owns the Reads for one input file (= one sample)
+// and supports three input formats: BAM alignments, corset
+// eq-classes, and salmon eq-classes.  compactify_reads()
+// collapses reads with identical alignment sets into single
+// weighted entries via hash-bucket deduplication.
 //
 // Original author: Nadia Davidson
 // Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no

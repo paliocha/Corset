@@ -4,9 +4,14 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-// A Cluster (super-cluster) holds transcripts that share at least one
-// read.  Contains the hierarchical clustering algorithm and the
-// log-likelihood ratio expression test.
+// A Cluster (super-cluster) holds all transcripts that share
+// at least one read.  Hierarchically clusters them using a
+// log-likelihood ratio expression test.  Each merge step
+// walks per-group adjacency lists rather than scanning all
+// transcript groups (O(degree) per merge).  Closest pairs
+// are extracted via a lazy-deletion max-heap.  Distance
+// recomputation after merges is OpenMP-parallelised when
+// the merged group has many live neighbors.
 //
 // Original author: Nadia Davidson
 // Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no

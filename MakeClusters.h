@@ -4,8 +4,9 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-// Builds super-clusters (stage 1) via weighted union-find, then
-// dispatches parallel hierarchical clustering (stage 2).
+// Builds super-clusters (stage 1) via weighted union-find,
+// then dispatches OpenMP-parallel hierarchical clustering
+// (stage 2) across independent super-clusters.
 //
 // Original author: Nadia Davidson
 // Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no

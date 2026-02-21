@@ -6,7 +6,9 @@
 
 // Stores transcript names and temporary read-back-references.
 // Allows transcripts to be identified by pointer rather than
-// string, which is faster and uses less memory.
+// string, which is faster and uses less memory.  Also holds
+// global clustering parameters as static members (samples,
+// groups, min_counts) set once from CLI arguments.
 //
 // Original author: Nadia Davidson
 // Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no

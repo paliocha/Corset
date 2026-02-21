@@ -4,10 +4,10 @@
 // publications where you made use of it for any part of the data
 // analysis.
 
-// A general container class storing a pointer to an object alongside its
-// name (ID string).  Used for Read and Transcript lookup by name during
-// the first half of the program; destroyed once super-clusters are built
-// to conserve memory.
+// A template container storing a pointer to an object
+// alongside its name (ID string).  Used for Read and
+// Transcript lookup by name during I/O; destroyed once
+// super-clusters are built to conserve memory.
 //
 // Original author: Nadia Davidson
 // Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
