@@ -3,11 +3,12 @@
 // General Public License. We also ask that you cite this software in
 // publications where you made use of it for any part of the data
 // analysis.
+//
+// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #include <Cluster.h>
 #include <cmath>
 #include <iostream>
-#include <fstream>
 #include <sstream>
 #include <ranges>
 #include <omp.h>
@@ -23,7 +24,6 @@ using std::vector;
 using std::map;
 using std::min;
 using std::ofstream;
-using std::ifstream;
 using std::ostringstream;
 using std::ios_base;
 
@@ -210,19 +210,25 @@ void Cluster::merge(int i, int j) {
     }
 
     // ── Sequential: apply distance updates, rebuild adj_[i] ────────────
-    // Remove j's old entries from the distance matrix
+    // Remove j's old entries from the distance matrix and neighbors' adj lists
     for (int k : adj_[j]) {
         if (!alive_[k]) continue;
         if (k < j) dist.remove(j, k);
         else       dist.remove(k, j);
+        auto &ak = adj_[k];
+        auto it = std::lower_bound(ak.begin(), ak.end(), j);
+        if (it != ak.end() && *it == j) ak.erase(it);
     }
     adj_[j].clear();
 
-    // Remove i's old entries, then insert new ones
+    // Remove i's old entries (will be re-added below if still linked)
     for (int k : adj_[i]) {
         if (!alive_[k]) continue;
         if (k < i) dist.remove(i, k);
         else       dist.remove(k, i);
+        auto &ak = adj_[k];
+        auto it = std::lower_bound(ak.begin(), ak.end(), i);
+        if (it != ak.end() && *it == i) ak.erase(it);
     }
 
     // Rebuild adj_[i] with fresh distances
@@ -374,28 +380,17 @@ void Cluster::output_clusters(const string &threshold) {
         if (!groups[g].empty()) id++;
     }
 
-    // Write atomically under critical section using persistent file handles
+    // Write atomically under critical section (RAII handles close on scope exit)
     #pragma omp critical(file_io)
     {
-        static string last_counts_fn, last_cluster_fn;
-        static ofstream countsFile, clusterFile;
-
         string counts_fn  = file_prefix + string(file_counts) + threshold + string(file_ext);
         string cluster_fn = file_prefix + string(file_clusters) + threshold + string(file_ext);
 
-        if (counts_fn != last_counts_fn) {
-            if (countsFile.is_open()) countsFile.close();
-            countsFile.open(counts_fn, ios_base::app);
-            last_counts_fn = counts_fn;
-        }
-        if (cluster_fn != last_cluster_fn) {
-            if (clusterFile.is_open()) clusterFile.close();
-            clusterFile.open(cluster_fn, ios_base::app);
-            last_cluster_fn = cluster_fn;
-        }
+        ofstream countsFile(counts_fn, ios_base::app);
+        countsFile << counts_buf.str();
 
-        countsFile  << counts_buf.str();  countsFile.flush();
-        clusterFile << cluster_buf.str(); clusterFile.flush();
+        ofstream clusterFile(cluster_fn, ios_base::app);
+        clusterFile << cluster_buf.str();
     }
 }
 

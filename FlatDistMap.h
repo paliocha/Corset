@@ -7,6 +7,9 @@
 // Uses sentinel keys (EMPTY/TOMBSTONE) instead of a separate metadata
 // array.  Safe key range: [0, UINT64_MAX-2].  The distance-matrix keys
 // (ntrans*i + j, ntrans ≤ 2M, i,j < ntrans) are well within range.
+//
+// Author: Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 21 February 2026
 
 #pragma once
 
@@ -24,9 +27,10 @@ class FlatDistMap {
     };
 
     std::vector<Slot> slots_;
-    size_t size_     = 0;
-    size_t capacity_ = 0;   // always power of 2
-    size_t mask_     = 0;   // capacity_ - 1
+    size_t size_       = 0;
+    size_t tombstones_ = 0;
+    size_t capacity_   = 0;   // always power of 2
+    size_t mask_       = 0;   // capacity_ - 1
 
     // WangHash64 inlined — avoids indirection through a functor.
     [[nodiscard]] static constexpr size_t hash(uint64_t k) noexcept {
@@ -45,6 +49,7 @@ class FlatDistMap {
         while (true) {
             auto &s = slots_[idx];
             if (s.key == EMPTY || s.key == TOMBSTONE) {
+                if (s.key == TOMBSTONE) --tombstones_;
                 s = {key, value};
                 ++size_;
                 return;
@@ -58,9 +63,10 @@ class FlatDistMap {
         size_t new_cap = capacity_ ? capacity_ * 2 : 1024;
         std::vector<Slot> old = std::move(slots_);
         slots_.assign(new_cap, Slot{});
-        capacity_ = new_cap;
-        mask_     = new_cap - 1;
-        size_     = 0;
+        capacity_   = new_cap;
+        mask_       = new_cap - 1;
+        size_       = 0;
+        tombstones_ = 0;
         for (const auto &s : old)
             if (s.key != EMPTY && s.key != TOMBSTONE)
                 insert_no_grow(s.key, s.value);
@@ -76,9 +82,10 @@ public:
         if (cap > capacity_) {
             std::vector<Slot> old = std::move(slots_);
             slots_.assign(cap, Slot{});
-            capacity_ = cap;
-            mask_     = cap - 1;
-            size_     = 0;
+            capacity_   = cap;
+            mask_       = cap - 1;
+            size_       = 0;
+            tombstones_ = 0;
             for (const auto &s : old)
                 if (s.key != EMPTY && s.key != TOMBSTONE)
                     insert_no_grow(s.key, s.value);
@@ -86,7 +93,7 @@ public:
     }
 
     void set(uint64_t key, unsigned char value) {
-        if (size_ >= static_cast<size_t>(capacity_ * MAX_LOAD))
+        if (size_ + tombstones_ >= static_cast<size_t>(capacity_ * MAX_LOAD))
             grow_and_rehash();
         insert_no_grow(key, value);
     }
@@ -117,7 +124,7 @@ public:
         size_t idx = hash(key) & mask_;
         while (true) {
             auto &s = slots_[idx];
-            if (s.key == key) { s.key = TOMBSTONE; --size_; return; }
+            if (s.key == key) { s.key = TOMBSTONE; --size_; ++tombstones_; return; }
             if (s.key == EMPTY) return;
             idx = (idx + 1) & mask_;
         }

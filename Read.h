@@ -9,6 +9,7 @@
 // equivalence class, tagged with a sample index.
 //
 // Original author: Nadia Davidson
+// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #pragma once
 
@@ -50,7 +51,7 @@ public:
     void sort_alignments() { std::ranges::sort(alignments_); }
 
     [[nodiscard]] bool has(Transcript *t) const {
-        return std::ranges::contains(alignments_, t);
+        return std::find(alignments_.begin(), alignments_.end(), t) != alignments_.end();
     }
 
     void remove(Transcript *t) { std::erase(alignments_, t); }

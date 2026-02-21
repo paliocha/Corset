@@ -10,6 +10,7 @@
 // Usage: corset_fasta_ID_changer <cluster file> <fasta file> > <out>
 //
 // Author: Nadia Davidson
+// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #include <iostream>
 #include <fstream>

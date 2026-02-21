@@ -3,6 +3,8 @@
 // General Public License. We also ask that you cite this software in
 // publications where you made use of it for any part of the data
 // analysis.
+//
+// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #include <iostream>
 #include <vector>

@@ -14,6 +14,7 @@
  **
  ** Original author: Nadia Davidson
  ** OpenMP/htslib port: Martin Paliocha, 2026
+ ** Last modified 21 February 2026, martin.paliocha@nmbu.no
  **/
 
 #include <iostream>
@@ -23,7 +24,6 @@
 #include <vector>
 #include <sstream>
 #include <cstdlib>
-#include <cstring>
 #include <algorithm>
 #include <climits>
 #include <map>
@@ -47,8 +47,6 @@ using std::ofstream;
 using std::string;
 using std::stringstream;
 using std::vector;
-
-#define MAX_BAM_LINE_LENGTH 10000
 
 static constexpr std::string_view corset_extension = ".corset-reads";
 
@@ -158,9 +156,10 @@ enum class ReadStatus { redistributed, counted, filtered };
 // Add an equivalence class into the ReadList.  Common to corset and
 // salmon EC file parsing.
 ReadStatus add_equivalence_class(ReadList *rList, int sample,
-                                 vector<string> &transNames, int weight) {
+                                 vector<string> &transNames, int weight,
+                                 std::default_random_engine &rng) {
     if (weight < Transcript::min_reads_for_link) {
-        std::shuffle(transNames.begin(), transNames.end(), std::default_random_engine());
+        std::shuffle(transNames.begin(), transNames.end(), rng);
         for (size_t rr = 0; rr < transNames.size(); rr++) {
             int this_weight = weight / static_cast<int>(transNames.size());
             if (static_cast<int>(rr) < (weight % static_cast<int>(transNames.size())))
@@ -196,6 +195,7 @@ ReadList *read_corset_file(string all_file_names, TranscriptList *trans, int sam
         ifstream file(filename);
         string line;
         int reads_counted = 0, reads_filtered = 0, reads_redistributed = 0;
+        std::default_random_engine rng(sample * 2654435761u + 42);
 
         while (getline(file, line)) {
             istringstream istream(line);
@@ -206,7 +206,7 @@ ReadList *read_corset_file(string all_file_names, TranscriptList *trans, int sam
             while (istream >> name)
                 transNames.push_back(name);
 
-            auto ret = add_equivalence_class(rList, sample, transNames, weight);
+            auto ret = add_equivalence_class(rList, sample, transNames, weight, rng);
             switch (ret) {
                 case ReadStatus::redistributed: reads_redistributed += weight; break;
                 case ReadStatus::counted:       reads_counted += weight;       break;
@@ -235,6 +235,7 @@ ReadList *read_salmon_eq_classes_file(string all_file_names, TranscriptList *tra
         ifstream file(filename);
         string line;
         int reads_counted = 0, reads_filtered = 0, reads_redistributed = 0;
+        std::default_random_engine rng(sample * 2654435761u + 42);
 
         // Header: transcript count, then eq class count
         getline(file, line);
@@ -269,7 +270,7 @@ ReadList *read_salmon_eq_classes_file(string all_file_names, TranscriptList *tra
 
             // Fast path: use pre-resolved pointers, skip string round-trip
             if (weight < Transcript::min_reads_for_link) {
-                std::shuffle(eq_trans.begin(), eq_trans.end(), std::default_random_engine());
+                std::shuffle(eq_trans.begin(), eq_trans.end(), rng);
                 for (int rr = 0; rr < eq_size; rr++) {
                     int this_weight = weight / eq_size;
                     if (rr < (weight % eq_size))
@@ -336,7 +337,6 @@ void print_usage() {
          << endl;
 }
 
-// the real stuff starts here.
 // ── Main ────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv) {

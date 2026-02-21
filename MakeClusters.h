@@ -8,6 +8,7 @@
 // dispatches parallel hierarchical clustering (stage 2).
 //
 // Original author: Nadia Davidson
+// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #pragma once
 

@@ -10,6 +10,7 @@
 // to conserve memory.
 //
 // Original author: Nadia Davidson
+// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #pragma once
 
