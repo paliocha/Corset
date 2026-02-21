@@ -528,6 +528,10 @@ int main(int argc, char **argv) {
         print_usage();
         exit(1);
     }
+    if (smpls > 255) {
+        cerr << "Error: maximum of 255 samples supported (got " << smpls << ")." << endl;
+        exit(1);
+    }
 
     if (sample_names.empty()) {
         for (int s = optind; s < argc; s++) {
