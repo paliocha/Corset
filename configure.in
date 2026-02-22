@@ -49,6 +49,39 @@ AC_CHECK_LIB([hts], [hts_open], [], [
   exit -1
 ])
 
+# ---------- igraph discovery (optional, for Leiden clustering) ----------
+AC_ARG_WITH(igraph, [  --with-igraph=DIR
+                  specify the prefix where igraph is installed (expects DIR/include/igraph/igraph.h and DIR/lib/libigraph)])
+
+if test "$with_igraph" != "" && test "$with_igraph" != "no"
+then
+    if test "$with_igraph" != "yes"
+    then
+        CPPFLAGS="-I$with_igraph/include $CPPFLAGS"
+        CXXFLAGS="-I$with_igraph/include $CXXFLAGS"
+        LDFLAGS="-L$with_igraph/lib $LDFLAGS"
+        LD_RUN_PATH="$with_igraph/lib:$LD_RUN_PATH"
+    fi
+
+    AC_CHECK_HEADERS([igraph/igraph.h], [
+        AC_CHECK_LIB([igraph], [igraph_community_leiden], [
+            CXXFLAGS="-DHAVE_IGRAPH $CXXFLAGS"
+            LIBS="-ligraph $LIBS"
+            IGRAPH_OBJ="LeidenCluster.o"
+            AC_MSG_RESULT([igraph found — Leiden clustering enabled])
+        ], [
+            AC_MSG_WARN([igraph library found but igraph_community_leiden missing — Leiden disabled])
+            IGRAPH_OBJ=""
+        ])
+    ], [
+        AC_MSG_WARN([igraph headers not found — Leiden clustering disabled])
+        IGRAPH_OBJ=""
+    ])
+else
+    IGRAPH_OBJ=""
+fi
+AC_SUBST(IGRAPH_OBJ)
+
 AC_CONFIG_FILES([Makefile])
 
 my_save_cflags="$CXXFLAGS"

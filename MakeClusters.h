@@ -5,11 +5,12 @@
 // analysis.
 
 // Builds super-clusters (stage 1) via weighted union-find,
-// then dispatches OpenMP-parallel hierarchical clustering
-// (stage 2) across independent super-clusters.
+// then dispatches OpenMP-parallel clustering (stage 2) across
+// independent super-clusters.  Supports hierarchical (default)
+// and Leiden (--algorithm leiden) back-ends.
 //
 // Original author: Nadia Davidson
-// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 22 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #pragma once
 
