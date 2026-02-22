@@ -1,0 +1,92 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%files
+    # Copy the corset source tree into the build
+    /mnt/users/martpali/AnnualPerennial/Corset /opt/corset
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        autoconf \
+        cmake \
+        wget \
+        ca-certificates \
+        zlib1g-dev \
+        libbz2-dev \
+        liblzma-dev \
+        libcurl4-openssl-dev \
+        libdeflate-dev \
+        libssl-dev \
+        libgomp1 \
+        libxml2-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+    # ---------- build htslib 1.23 from source ----------
+    cd /tmp
+    wget -q https://github.com/samtools/htslib/releases/download/1.23/htslib-1.23.tar.bz2
+    tar xjf htslib-1.23.tar.bz2
+    cd htslib-1.23
+    ./configure --prefix=/usr/local --enable-libcurl
+    make -j$(nproc)
+    make install
+    ldconfig
+    cd /tmp && rm -rf htslib-1.23*
+
+    # ---------- build igraph 1.0.1 from source ----------
+    cd /tmp
+    wget -q https://github.com/igraph/igraph/releases/download/1.0.1/igraph-1.0.1.tar.gz
+    tar xzf igraph-1.0.1.tar.gz
+    cd igraph-1.0.1
+    mkdir build && cd build
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+             -DCMAKE_BUILD_TYPE=Release \
+             -DIGRAPH_OPENMP_SUPPORT=ON \
+             -DIGRAPH_ENABLE_TLS=ON \
+             -DBUILD_SHARED_LIBS=ON
+    make -j$(nproc)
+    make install
+    ldconfig
+    cd /tmp && rm -rf igraph-1.0.1*
+
+    # ---------- build corset ----------
+    cd /opt/corset
+    autoconf configure.in > configure && chmod +x configure
+    ./configure --with-htslib=/usr/local --with-igraph=/usr/local
+    make clean
+    make -j$(nproc)
+    make install prefix=/usr/local
+
+    # Clean build artifacts only (keep all system packages for runtime libs)
+    cd /opt/corset && make clean || true
+    rm -rf /tmp/htslib-* /tmp/igraph-* /var/lib/apt/lists/*
+
+%environment
+    export PATH="/usr/local/bin:${PATH}"
+    export LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
+
+%runscript
+    exec corset "$@"
+
+%labels
+    Author Martin Paliocha
+    Version 1.10.0
+    Description Corset 1.10.0 with OpenMP, Leiden clustering (igraph), and htslib 1.23
+
+%help
+    Corset fork with OpenMP parallelism and optional Leiden clustering.
+    Ported from legacy samtools 0.x API to htslib 1.23.
+
+    New options:
+      -t <int>              Threads (default: OMP_NUM_THREADS)
+      --algorithm <str>     hierarchical (default) or leiden
+                            Leiden uses -d thresholds as CPM resolution
+      --version, -v         Print version and exit
+      --help, -h            Print usage and exit
+
+    Usage:  corset --algorithm leiden -d 0.3 \
+                  -t 16 -i salmon_eq_classes \
+                  -g group1,group1,group2,group2 \
+                  -p my_prefix eq_class_1.sf eq_class_2.sf ...
