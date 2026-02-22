@@ -5,16 +5,21 @@
 // analysis.
 
 // A Cluster (super-cluster) holds all transcripts that share
-// at least one read.  Hierarchically clusters them using a
-// log-likelihood ratio expression test.  Each merge step
-// walks per-group adjacency lists rather than scanning all
-// transcript groups (O(degree) per merge).  Closest pairs
-// are extracted via a lazy-deletion max-heap.  Distance
-// recomputation after merges is OpenMP-parallelised when
-// the merged group has many live neighbors.
+// at least one read.  Two clustering back-ends are available:
+//
+// 1. Hierarchical (default) — agglomerative clustering with a
+//    log-likelihood ratio expression test.  Each merge step
+//    walks per-group adjacency lists rather than scanning all
+//    transcript groups (O(degree) per merge).  Closest pairs
+//    are extracted via a lazy-deletion max-heap.  Distance
+//    recomputation after merges is OpenMP-parallelised when
+//    the merged group has many live neighbors.
+//
+// 2. Leiden (--algorithm leiden) — community detection via
+//    igraph's CPM implementation.  See LeidenCluster.cc.
 //
 // Original author: Nadia Davidson
-// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 22 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #pragma once
 
@@ -34,6 +39,8 @@
 
 using group       = std::vector<std::vector<int>>;
 using read_group  = std::vector<std::vector<std::vector<int>>>;
+
+enum class ClusterAlgorithm { Hierarchical, Leiden };
 
 // Lazy-deletion max-heap entry for find_next_pair().
 struct HeapEntry {
@@ -87,7 +94,6 @@ class Cluster {
     std::vector<int> sample_groups;
 
     // --- Private clustering methods ---
-    float         get_dist(int i, int j);
     unsigned char find_next_pair(int &max_i, int &max_j);
     void          merge(int i, int j);
     void          initialise_matrix();
@@ -110,10 +116,24 @@ public:
 
     void set_sample_groups(const std::vector<int> &sg) { sample_groups = sg; }
 
+    // Distance between two transcript groups (shared-read proportion
+    // with LRT expression test).  Public so LeidenCluster can reuse it.
+    float get_dist(int i, int j);
+
+    // Build read_groups / read_group_sizes from reads.  Called by
+    // initialise_matrix() and cluster_leiden() before graph construction.
+    void setup_read_groups();
+
+    // Accessors for Leiden graph construction
+    [[nodiscard]] const group &get_groups() const         { return groups; }
+    [[nodiscard]] const read_group &get_read_groups() const { return read_groups; }
+    [[nodiscard]] const group &get_read_group_sizes() const { return read_group_sizes; }
+
     // Main entry point: hierarchical clustering with expression testing.
     void cluster(std::map<float, std::string> &thresholds);
 
     // --- Static configuration ---
+    static inline ClusterAlgorithm algorithm = ClusterAlgorithm::Hierarchical;
     static inline float D_cut = 0;
     static inline std::string file_prefix;
     static constexpr std::string_view file_counts              = "counts";

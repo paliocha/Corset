@@ -4,7 +4,7 @@
 // publications where you made use of it for any part of the data
 // analysis.
 //
-// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 22 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #include <Cluster.h>
 #include <cmath>
@@ -395,17 +395,18 @@ void Cluster::output_clusters(const string &threshold) {
 }
 
 
-// ── Initialise the distance matrix ──────────────────────────────────
+// ── Set up read-group data structures ───────────────────────────────
+// Shared setup used by both hierarchical clustering (initialise_matrix)
+// and Leiden clustering (cluster_leiden).  Assigns positional indices,
+// builds per-sample read-group lists and sizes.
 
-void Cluster::initialise_matrix() {
+void Cluster::setup_read_groups() {
     const int ntrans   = n_trans();
     const int nsamples = Transcript::samples;
 
     // Assign positional indices to transcripts
     for (int i = 0; i < ntrans; i++)
         get_tran(i)->pos(i);
-
-    dist.set_size(ntrans);
 
     read_groups.resize(nsamples);
     for (int s = 0; s < nsamples; s++)
@@ -414,18 +415,13 @@ void Cluster::initialise_matrix() {
     for (int t = 0; t < ntrans; t++)
         read_group_sizes[t].resize(nsamples, 0);
 
-    // Build read-group lists and collect non-zero distance pairs
-    vector<std::pair<int, int>> nz_pairs;
+    // Build read-group lists
     for (int r = 0; r < n_reads(); r++) {
         Read *read   = get_read(r);
         int   sample = read->get_sample();
 
         for (auto t1 = read->align_begin(); t1 != read->align_end(); ++t1) {
             int i = (*t1)->pos();
-            for (auto t2 = read->align_begin(); t2 != t1; ++t2) {
-                int j = (*t2)->pos();
-                nz_pairs.emplace_back(std::max(i, j), std::min(i, j));
-            }
             read_groups[sample][i].push_back(r);
             read_group_sizes[i][sample] += read->get_weight();
         }
@@ -435,6 +431,29 @@ void Cluster::initialise_matrix() {
     groups.resize(ntrans);
     for (int n = 0; n < ntrans; n++)
         groups[n].push_back(n);
+}
+
+
+// ── Initialise the distance matrix ──────────────────────────────────
+
+void Cluster::initialise_matrix() {
+    const int ntrans = n_trans();
+
+    setup_read_groups();
+    dist.set_size(ntrans);
+
+    // Collect non-zero distance pairs from shared reads
+    vector<std::pair<int, int>> nz_pairs;
+    for (int r = 0; r < n_reads(); r++) {
+        Read *read = get_read(r);
+        for (auto t1 = read->align_begin(); t1 != read->align_end(); ++t1) {
+            int i = (*t1)->pos();
+            for (auto t2 = read->align_begin(); t2 != t1; ++t2) {
+                int j = (*t2)->pos();
+                nz_pairs.emplace_back(std::max(i, j), std::min(i, j));
+            }
+        }
+    }
 
     // Deduplicate pairs to avoid redundant distance calculations
     std::ranges::sort(nz_pairs);

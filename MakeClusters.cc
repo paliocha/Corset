@@ -4,13 +4,17 @@
 // publications where you made use of it for any part of the data
 // analysis.
 //
-// Last modified 21 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 22 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #include <iostream>
 #include <vector>
 #include <map>
 #include <omp.h>
 #include <MakeClusters.h>
+
+#ifdef HAVE_IGRAPH
+#include <LeidenCluster.h>
+#endif
 
 using std::cout;
 using std::endl;
@@ -107,13 +111,15 @@ void MakeClusters::makeSuperClusters(vector<ReadList *> &readLists) {
 }
 
 
-// ── Stage 2: Parallel hierarchical clustering ───────────────────────
+// ── Stage 2: Parallel clustering ─────────────────────────────────────
 
 void MakeClusters::processSuperClusters(map<float, string> &thresholds,
                                         vector<int> &groups) {
     int n = static_cast<int>(clusterList.size());
-    cout << "Starting hierarchical clustering of " << n
-         << " super-clusters..." << endl;
+    const bool use_leiden = (Cluster::algorithm == ClusterAlgorithm::Leiden);
+
+    cout << "Starting " << (use_leiden ? "Leiden" : "hierarchical")
+         << " clustering of " << n << " super-clusters..." << endl;
 
     int done = 0;
     #pragma omp parallel for schedule(dynamic) shared(done)
@@ -121,7 +127,14 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
         Cluster *c = clusterList[i];
         c->set_id(i);
         c->set_sample_groups(groups);
-        c->cluster(thresholds);
+
+#ifdef HAVE_IGRAPH
+        if (use_leiden)
+            cluster_leiden(c, thresholds);
+        else
+#endif
+            c->cluster(thresholds);
+
         delete c;
 
         #pragma omp atomic
@@ -142,6 +155,6 @@ MakeClusters::MakeClusters(vector<ReadList *> &readLists,
                            vector<int> &groups) {
     // Stage 1: group transcripts sharing at least one read
     makeSuperClusters(readLists);
-    // Stage 2: hierarchical clustering within each super-cluster
+    // Stage 2: cluster within each super-cluster (hierarchical or Leiden)
     processSuperClusters(thresholds, groups);
 }

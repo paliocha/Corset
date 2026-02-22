@@ -9,6 +9,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        igraph: [true, false]
+
+    name: Build (${{ matrix.igraph && 'with igraph' || 'without igraph' }})
 
     steps:
     - uses: actions/checkout@v4
@@ -20,6 +25,10 @@ jobs:
           build-essential autoconf wget \
           zlib1g-dev libbz2-dev liblzma-dev \
           libcurl4-openssl-dev libdeflate-dev libssl-dev
+
+    - name: Install igraph
+      if: matrix.igraph
+      run: sudo apt-get install -y --no-install-recommends libigraph-dev
 
     - name: Build htslib 1.23
       run: |
@@ -34,7 +43,11 @@ jobs:
     - name: Configure
       run: |
         autoconf configure.in > configure && chmod +x configure
-        ./configure --with-htslib=/usr/local
+        if [ "${{ matrix.igraph }}" = "true" ]; then
+          ./configure --with-htslib=/usr/local --with-igraph=/usr
+        else
+          ./configure --with-htslib=/usr/local
+        fi
 
     - name: Build
       run: make -j$(nproc)

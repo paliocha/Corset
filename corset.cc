@@ -10,11 +10,11 @@
  ** 1 - Read alignments from BAM / salmon eq_classes / corset files.
  ** 2 - Filter transcripts with fewer than min_counts reads.
  ** 3 - Build super-clusters (transcripts sharing at least one read).
- ** 4 - Hierarchical clustering within each super-cluster (OpenMP parallel).
+ ** 4 - Clustering within each super-cluster (hierarchical or Leiden, OpenMP parallel).
  **
  ** Original author: Nadia Davidson
  ** OpenMP/htslib port: Martin Paliocha, 2026
- ** Last modified 21 February 2026, martin.paliocha@nmbu.no
+ ** Last modified 22 February 2026, martin.paliocha@nmbu.no
  **/
 
 #include <iostream>
@@ -326,7 +326,9 @@ void print_usage() {
          << "  -i <bam/corset/salmon_eq_classes>  Input file type. Default: bam\n"
          << "  -l <int>          Min reads for a link (corset/salmon_eq_classes mode). Default: 1\n"
          << "  -x <int>          Max alignments per read (corset/salmon_eq_classes mode).\n"
-         << "  -t <int>          Threads for parallel hierarchical clustering. Default: auto\n"
+         << "  -t <int>          Threads for parallel clustering. Default: auto\n"
+         << "  --algorithm <str> Clustering algorithm: hierarchical (default) or leiden.\n"
+         << "                    Leiden uses -d thresholds as CPM resolution values.\n"
          << "  -v, --version     Print version and exit.\n"
          << "  -h, --help        Print this help message and exit.\n"
          << "\n"
@@ -352,7 +354,8 @@ int main(int argc, char **argv) {
     // Function pointer to the input reader (BAM by default)
     ReadList *(*read_input)(string, TranscriptList *, int) = read_bam_file;
 
-    // Handle --version and --help before getopt (which only does short opts)
+    // Handle long options before getopt (which only does short opts).
+    // Mark consumed args with nullptr, then compact argv.
     for (int i = 1; i < argc; ++i) {
         string arg(argv[i]);
         if (arg == "--version" || arg == "-v") {
@@ -363,11 +366,41 @@ int main(int argc, char **argv) {
             print_usage();
             return 0;
         }
+        if (arg == "--algorithm" && i + 1 < argc) {
+            string val(argv[i + 1]);
+            if (val == "hierarchical") {
+                Cluster::algorithm = ClusterAlgorithm::Hierarchical;
+            } else if (val == "leiden") {
+#ifdef HAVE_IGRAPH
+                Cluster::algorithm = ClusterAlgorithm::Leiden;
+#else
+                cerr << "ERROR: Leiden requires igraph. Rebuild with --with-igraph=DIR." << endl;
+                exit(1);
+#endif
+            } else {
+                cerr << "ERROR: Unknown algorithm '" << val
+                     << "'. Choose 'hierarchical' or 'leiden'." << endl;
+                exit(1);
+            }
+            argv[i] = nullptr; argv[++i] = nullptr;
+            continue;
+        }
+    }
+    // Compact argv: remove consumed long options
+    {
+        int dst = 1;
+        for (int src = 1; src < argc; src++)
+            if (argv[src]) argv[dst++] = argv[src];
+        argc = dst;
     }
 
     cout << "\nRunning Corset Version " << VERSION << endl;
     cout << "Using " << omp_get_max_threads()
          << " threads (set OMP_NUM_THREADS or use -t to override)" << endl;
+    if (Cluster::algorithm == ClusterAlgorithm::Leiden)
+        cout << "Algorithm: Leiden (CPM, resolution from -d thresholds)" << endl;
+    else
+        cout << "Algorithm: hierarchical" << endl;
 
     // Allow two levels of parallelism: outer (super-clusters) + inner (merge)
     omp_set_max_active_levels(2);
