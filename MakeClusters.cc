@@ -116,10 +116,13 @@ void MakeClusters::makeSuperClusters(vector<ReadList *> &readLists) {
 void MakeClusters::processSuperClusters(map<float, string> &thresholds,
                                         vector<int> &groups) {
     int n = static_cast<int>(clusterList.size());
-    const bool use_leiden = (Cluster::algorithm == ClusterAlgorithm::Leiden);
+    const auto algo = Cluster::algorithm;
 
-    cout << "Starting " << (use_leiden ? "Leiden" : "hierarchical")
-         << " clustering of " << n << " super-clusters..." << endl;
+    const char *algo_name = "hierarchical";
+    if (algo == ClusterAlgorithm::Leiden) algo_name = "Leiden";
+    else if (algo == ClusterAlgorithm::Both) algo_name = "hierarchical + Leiden (comparison)";
+    cout << "Starting " << algo_name << " clustering of "
+         << n << " super-clusters..." << endl;
 
     int done = 0;
     #pragma omp parallel for schedule(dynamic) shared(done)
@@ -129,11 +132,18 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
         c->set_sample_groups(groups);
 
 #ifdef HAVE_IGRAPH
-        if (use_leiden)
+        if (algo == ClusterAlgorithm::Both) {
+            // Leiden first (reads cluster data without mutation)
+            cluster_leiden(c, thresholds, "l-");
+            // Hierarchical second (mutates via merges — must go last)
+            c->cluster(thresholds, "h-");
+        } else if (algo == ClusterAlgorithm::Leiden) {
             cluster_leiden(c, thresholds);
-        else
+        } else
 #endif
+        {
             c->cluster(thresholds);
+        }
 
         delete c;
 

@@ -40,7 +40,7 @@
 using group       = std::vector<std::vector<int>>;
 using read_group  = std::vector<std::vector<std::vector<int>>>;
 
-enum class ClusterAlgorithm { Hierarchical, Leiden };
+enum class ClusterAlgorithm { Hierarchical, Leiden, Both };
 
 // Lazy-deletion max-heap entry for find_next_pair().
 struct HeapEntry {
@@ -98,7 +98,8 @@ class Cluster {
     void          merge(int i, int j);
     void          initialise_matrix();
     std::vector<int> get_counts(int s);
-    void          output_clusters(const std::string &threshold);
+    void          output_clusters(const std::string &threshold,
+                                  const std::string &method_tag = "");
 
 public:
     // --- Accessors ---
@@ -118,7 +119,9 @@ public:
 
     // Distance between two transcript groups (shared-read proportion
     // with LRT expression test).  Public so LeidenCluster can reuse it.
-    float get_dist(int i, int j);
+    // When lrt_softness > 0, applies a sigmoid decay around D_cut instead
+    // of a hard binary gate (Leiden-only; hierarchical uses default 0).
+    float get_dist(int i, int j, float lrt_softness = 0.0f);
 
     // Build read_groups / read_group_sizes from reads.  Called by
     // initialise_matrix() and cluster_leiden() before graph construction.
@@ -130,11 +133,14 @@ public:
     [[nodiscard]] const group &get_read_group_sizes() const { return read_group_sizes; }
 
     // Main entry point: hierarchical clustering with expression testing.
-    void cluster(std::map<float, std::string> &thresholds);
+    void cluster(std::map<float, std::string> &thresholds,
+                 const std::string &method_tag = "");
 
     // --- Static configuration ---
     static inline ClusterAlgorithm algorithm = ClusterAlgorithm::Hierarchical;
     static inline float D_cut = 0;
+    static inline float lrt_softness = 0.0f;  // sigmoid steepness (0 = hard cutoff)
+    static inline int   knn = -1;             // -1 = disabled, 0 = auto, >0 = fixed k
     static inline std::string file_prefix;
     static constexpr std::string_view file_counts              = "counts";
     static constexpr std::string_view file_clusters            = "clusters";

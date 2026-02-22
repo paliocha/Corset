@@ -33,7 +33,7 @@ using std::ios_base;
 // If a log-likelihood ratio test detects differential expression between
 // experimental groups, the distance is forced to 0 (maximum separation).
 
-float Cluster::get_dist(int i, int j) {
+float Cluster::get_dist(int i, int j, float lrt_softness) {
     int shared_reads   = 0;
     float total_reads_i = 0;
     float total_reads_j = 0;
@@ -133,7 +133,16 @@ float Cluster::get_dist(int i, int j) {
     }
 
     float D = 2 * non_null - 2 * null;
-    return (D > D_cut) ? 0 : dist;
+
+    // Hard cutoff (hierarchical, or Leiden without --lrt-softness)
+    if (lrt_softness <= 0.0f)
+        return (D > D_cut) ? 0 : dist;
+
+    // Soft sigmoid decay for Leiden: smoothly down-weight borderline
+    // differential pairs instead of a binary gate at D_cut
+    if (D <= 0) return dist;
+    float scale = 1.0f / (1.0f + expf(lrt_softness * (D - D_cut)));
+    return dist * scale;
 }
 
 
@@ -311,7 +320,8 @@ vector<int> Cluster::get_counts(int s) {
 
 // ── Main clustering loop ────────────────────────────────────────────
 
-void Cluster::cluster(map<float, string> &thresholds) {
+void Cluster::cluster(map<float, string> &thresholds,
+                      const string &method_tag) {
     if (n_trans() > 1000) {
         #pragma omp critical(print)
         cout << "cluster with " << n_trans() << " transcripts.. this might take a while" << endl;
@@ -330,7 +340,7 @@ void Cluster::cluster(map<float, string> &thresholds) {
         }
 
         while (itr_d != thresholds.end() && distance > itr_d->first) {
-            output_clusters(itr_d->second);
+            output_clusters(itr_d->second, method_tag);
             itr_d++;
         }
         if (itr_d == thresholds.end() || distance == 1.0f) break;
@@ -340,7 +350,7 @@ void Cluster::cluster(map<float, string> &thresholds) {
 
     // Report final clustering for any remaining thresholds
     while (itr_d != thresholds.end()) {
-        output_clusters(itr_d->second);
+        output_clusters(itr_d->second, method_tag);
         itr_d++;
     }
 }
@@ -348,7 +358,8 @@ void Cluster::cluster(map<float, string> &thresholds) {
 
 // ── Output cluster assignments and counts ───────────────────────────
 
-void Cluster::output_clusters(const string &threshold) {
+void Cluster::output_clusters(const string &threshold,
+                              const string &method_tag) {
     // Compute counts for all samples
     vector<vector<int>> counts;
     counts.reserve(Transcript::samples);
@@ -383,8 +394,8 @@ void Cluster::output_clusters(const string &threshold) {
     // Write atomically under critical section (RAII handles close on scope exit)
     #pragma omp critical(file_io)
     {
-        string counts_fn  = file_prefix + string(file_counts) + threshold + string(file_ext);
-        string cluster_fn = file_prefix + string(file_clusters) + threshold + string(file_ext);
+        string counts_fn  = file_prefix + method_tag + string(file_counts) + threshold + string(file_ext);
+        string cluster_fn = file_prefix + method_tag + string(file_clusters) + threshold + string(file_ext);
 
         ofstream countsFile(counts_fn, ios_base::app);
         countsFile << counts_buf.str();
@@ -408,9 +419,13 @@ void Cluster::setup_read_groups() {
     for (int i = 0; i < ntrans; i++)
         get_tran(i)->pos(i);
 
+    // Clear before resize — idempotent for "both" mode where Leiden
+    // calls setup_read_groups() first and hierarchical calls it again.
+    read_groups.clear();
     read_groups.resize(nsamples);
     for (int s = 0; s < nsamples; s++)
         read_groups[s].resize(ntrans);
+    read_group_sizes.clear();
     read_group_sizes.resize(ntrans);
     for (int t = 0; t < ntrans; t++)
         read_group_sizes[t].resize(nsamples, 0);
@@ -428,6 +443,7 @@ void Cluster::setup_read_groups() {
     }
 
     // Each transcript gets its own initial cluster group
+    groups.clear();
     groups.resize(ntrans);
     for (int n = 0; n < ntrans; n++)
         groups[n].push_back(n);

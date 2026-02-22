@@ -3,6 +3,11 @@
 // in Cluster.cc.  Uses the Constant Potts Model (CPM) quality
 // function to avoid the resolution-limit problem.
 //
+// Features:
+//   - Soft LRT weighting: sigmoid decay around D_cut (--lrt-softness)
+//   - Adaptive kNN sparsification: connectivity-constrained minimum-k
+//     per super-cluster (--knn auto), or fixed global k (--knn <int>)
+//
 // Author: Martin Paliocha, martin.paliocha@nmbu.no
 // Created 22 February 2026
 
@@ -20,8 +25,10 @@
 #include <sstream>
 #include <vector>
 #include <map>
+#include <queue>
 #include <string>
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <ranges>
 
@@ -35,14 +42,25 @@ using std::ostringstream;
 using std::ios_base;
 
 
-// ── Build igraph from shared-read overlaps ──────────────────────────
-// Reuses Cluster::get_dist() which already includes the LRT
-// expression test (differential pairs get distance 0 → excluded).
+// ── Edge list: raw edges before igraph construction ─────────────────
+// Separated from igraph creation so kNN filtering can operate on the
+// flat vectors before building the graph object.
 
-static void build_graph(Cluster *c,
-                        igraph_t *graph,
-                        igraph_vector_t *weights,
-                        int ntrans) {
+struct EdgeList {
+    vector<int>    src;
+    vector<int>    dst;
+    vector<double> wt;
+
+    void reserve(size_t n) { src.reserve(n); dst.reserve(n); wt.reserve(n); }
+    [[nodiscard]] size_t size() const { return src.size(); }
+};
+
+
+// ── Collect edges from shared reads ─────────────────────────────────
+// Reuses Cluster::get_dist() which includes the LRT expression test.
+// Passes lrt_softness through so Leiden can use sigmoid decay.
+
+static EdgeList collect_edges(Cluster *c, int ntrans) {
     // Collect non-zero transcript pairs from shared reads
     vector<std::pair<int, int>> nz_pairs;
     for (int r = 0; r < c->n_reads(); r++) {
@@ -62,37 +80,181 @@ static void build_graph(Cluster *c,
     nz_pairs.erase(first, last);
 
     // Compute distances and collect edges with non-zero weight
-    vector<int> edge_src, edge_dst;
-    vector<double> edge_wt;
-    edge_src.reserve(nz_pairs.size());
-    edge_dst.reserve(nz_pairs.size());
-    edge_wt.reserve(nz_pairs.size());
+    EdgeList edges;
+    edges.reserve(nz_pairs.size());
 
+    const float softness = Cluster::lrt_softness;
     for (auto &[hi, lo] : nz_pairs) {
-        float d = c->get_dist(hi, lo);
+        float d = c->get_dist(hi, lo, softness);
         if (d > 0.0f) {
-            edge_src.push_back(hi);
-            edge_dst.push_back(lo);
-            edge_wt.push_back(static_cast<double>(d));
+            edges.src.push_back(hi);
+            edges.dst.push_back(lo);
+            edges.wt.push_back(static_cast<double>(d));
         }
     }
+    return edges;
+}
 
-    // Build igraph edge vector (flat: src0, dst0, src1, dst1, ...)
-    igraph_integer_t nedges = static_cast<igraph_integer_t>(edge_src.size());
-    igraph_vector_int_t edges;
-    igraph_vector_int_init(&edges, 2 * nedges);
+
+// ── Build igraph from edge list ─────────────────────────────────────
+
+static void build_igraph(const EdgeList &edges, int ntrans,
+                         igraph_t *graph, igraph_vector_t *weights) {
+    igraph_integer_t nedges = static_cast<igraph_integer_t>(edges.size());
+    igraph_vector_int_t igraph_edges;
+    igraph_vector_int_init(&igraph_edges, 2 * nedges);
     for (igraph_integer_t e = 0; e < nedges; e++) {
-        VECTOR(edges)[2 * e]     = edge_src[e];
-        VECTOR(edges)[2 * e + 1] = edge_dst[e];
+        VECTOR(igraph_edges)[2 * e]     = edges.src[e];
+        VECTOR(igraph_edges)[2 * e + 1] = edges.dst[e];
     }
 
-    igraph_create(graph, &edges, ntrans, IGRAPH_UNDIRECTED);
-    igraph_vector_int_destroy(&edges);
+    igraph_create(graph, &igraph_edges, ntrans, IGRAPH_UNDIRECTED);
+    igraph_vector_int_destroy(&igraph_edges);
 
-    // Copy edge weights
     igraph_vector_init(weights, nedges);
     for (igraph_integer_t e = 0; e < nedges; e++)
-        VECTOR(*weights)[e] = edge_wt[e];
+        VECTOR(*weights)[e] = edges.wt[e];
+}
+
+
+// ── kNN sparsification ──────────────────────────────────────────────
+// Keep only the k highest-weight edges per node (symmetric: keep if
+// EITHER endpoint claims the edge in its top-k).
+
+static EdgeList apply_knn(const EdgeList &in, int ntrans, int k) {
+    const size_t nedges = in.size();
+
+    // Per-node: collect (weight, edge_index) pairs
+    vector<vector<std::pair<double, size_t>>> node_edges(ntrans);
+    for (size_t e = 0; e < nedges; e++) {
+        node_edges[in.src[e]].emplace_back(in.wt[e], e);
+        node_edges[in.dst[e]].emplace_back(in.wt[e], e);
+    }
+
+    // For each node, mark top-k edges by weight
+    vector<bool> keep(nedges, false);
+    for (int n = 0; n < ntrans; n++) {
+        auto &ne = node_edges[n];
+        if (static_cast<int>(ne.size()) <= k) {
+            for (auto &[w, idx] : ne) keep[idx] = true;
+            continue;
+        }
+        // Partial sort: top-k by weight (descending)
+        std::nth_element(ne.begin(), ne.begin() + k, ne.end(),
+                         [](auto &a, auto &b) { return a.first > b.first; });
+        for (int i = 0; i < k; i++)
+            keep[ne[i].second] = true;
+    }
+
+    // Compact kept edges
+    EdgeList out;
+    out.reserve(nedges);
+    for (size_t e = 0; e < nedges; e++) {
+        if (keep[e]) {
+            out.src.push_back(in.src[e]);
+            out.dst.push_back(in.dst[e]);
+            out.wt.push_back(in.wt[e]);
+        }
+    }
+    return out;
+}
+
+
+// ── Count connected components via BFS ──────────────────────────────
+// O(V + E), used by the connectivity-constrained k search.
+
+static int count_components(const EdgeList &edges, int ntrans) {
+    vector<vector<int>> adj(ntrans);
+    for (size_t e = 0; e < edges.size(); e++) {
+        adj[edges.src[e]].push_back(edges.dst[e]);
+        adj[edges.dst[e]].push_back(edges.src[e]);
+    }
+
+    vector<bool> visited(ntrans, false);
+    int components = 0;
+    std::queue<int> q;
+    for (int n = 0; n < ntrans; n++) {
+        if (visited[n]) continue;
+        components++;
+        q.push(n);
+        visited[n] = true;
+        while (!q.empty()) {
+            int cur = q.front();
+            q.pop();
+            for (int nb : adj[cur]) {
+                if (!visited[nb]) {
+                    visited[nb] = true;
+                    q.push(nb);
+                }
+            }
+        }
+    }
+    return components;
+}
+
+
+// ── Find minimum k preserving graph connectivity ────────────────────
+// Binary search in [1, sqrt(n)] for the smallest k where the number
+// of connected components does not exceed target_components.
+
+static int find_optimal_k(const EdgeList &edges, int ntrans,
+                          int target_components) {
+    int lo = 1;
+    int hi = static_cast<int>(std::round(std::sqrt(ntrans)));
+    int best_k = hi;
+
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        EdgeList filtered = apply_knn(edges, ntrans, mid);
+        int comp = count_components(filtered, ntrans);
+
+        if (comp <= target_components) {
+            best_k = mid;
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return best_k;
+}
+
+
+// ── Run Leiden and return membership + community count ───────────────
+
+struct LeidenResult {
+    vector<int> membership;
+    int         ncommunities;
+    double      quality;
+};
+
+static LeidenResult run_leiden(igraph_t *graph, igraph_vector_t *weights,
+                               double resolution, int ntrans) {
+    igraph_vector_int_t igraph_membership;
+    igraph_vector_int_init(&igraph_membership, ntrans);
+    igraph_int_t nb_clusters = 0;
+    igraph_real_t quality = 0;
+
+    igraph_community_leiden_simple(
+        graph, weights,
+        IGRAPH_LEIDEN_OBJECTIVE_CPM,
+        resolution,
+        /* beta= */ 0.01,
+        /* start= */ 0,
+        /* n_iterations= */ -1,
+        &igraph_membership,
+        &nb_clusters,
+        &quality
+    );
+
+    LeidenResult result;
+    result.ncommunities = static_cast<int>(nb_clusters);
+    result.quality      = static_cast<double>(quality);
+    result.membership.resize(ntrans);
+    for (int i = 0; i < ntrans; i++)
+        result.membership[i] = static_cast<int>(VECTOR(igraph_membership)[i]);
+
+    igraph_vector_int_destroy(&igraph_membership);
+    return result;
 }
 
 
@@ -111,7 +273,7 @@ static vector<int> get_counts_leiden(Cluster *c,
     // Thread-safe RNG seed
     unsigned int seed = static_cast<unsigned int>(c->get_id() * 17 + sample * 31 + 42);
 
-    // Build inverted index: read → list of communities it appears in
+    // Build inverted index: read -> list of communities it appears in
     vector<vector<int>> read_to_comm(nreads);
     for (int t = 0; t < ntrans; t++) {
         int comm = membership[t];
@@ -147,7 +309,8 @@ static vector<int> get_counts_leiden(Cluster *c,
 static void output_leiden(Cluster *c,
                           const string &threshold,
                           int ncommunities,
-                          const vector<int> &membership) {
+                          const vector<int> &membership,
+                          const string &method_tag) {
     const int ntrans = c->n_trans();
 
     // Compute counts per community per sample
@@ -184,9 +347,11 @@ static void output_leiden(Cluster *c,
     // Write atomically under critical section
     #pragma omp critical(file_io)
     {
-        string counts_fn  = Cluster::file_prefix + string(Cluster::file_counts)
+        string counts_fn  = Cluster::file_prefix + method_tag
+                          + string(Cluster::file_counts)
                           + threshold + string(Cluster::file_ext);
-        string cluster_fn = Cluster::file_prefix + string(Cluster::file_clusters)
+        string cluster_fn = Cluster::file_prefix + method_tag
+                          + string(Cluster::file_clusters)
                           + threshold + string(Cluster::file_ext);
 
         ofstream countsFile(counts_fn, ios_base::app);
@@ -201,72 +366,89 @@ static void output_leiden(Cluster *c,
 // ── Main Leiden entry point ─────────────────────────────────────────
 
 void cluster_leiden(Cluster *c,
-                    map<float, string> &thresholds) {
+                    map<float, string> &thresholds,
+                    const string &method_tag) {
     const int ntrans = c->n_trans();
 
     // Always set up read-group data (needed for get_dist and count output)
     c->setup_read_groups();
 
     if (ntrans <= 1) {
-        // Single transcript: just output it directly for each threshold
         for (auto &[thr, label] : thresholds) {
             vector<int> membership(ntrans, 0);
-            output_leiden(c, label, 1, membership);
+            output_leiden(c, label, 1, membership, method_tag);
         }
         return;
     }
 
     if (ntrans > 1000) {
         #pragma omp critical(print)
-        cout << "Leiden: cluster with " << ntrans
-             << " transcripts" << endl;
+        cout << "Leiden: super-cluster " << c->get_id()
+             << " with " << ntrans << " transcripts" << endl;
     }
 
-    // Seed per-thread RNG to avoid races on the global default RNG.
-    // igraph_rng_default() returns thread-local storage when IGRAPH_THREAD_SAFE=1.
+    // Seed per-thread RNG for deterministic Leiden results
     igraph_rng_seed(igraph_rng_default(),
                     static_cast<igraph_uint_t>(c->get_id() + 42));
 
-    // Build the shared-read graph (LRT pre-filtered)
+    // Collect all edges (expensive: calls get_dist for every shared-read pair)
+    EdgeList edges = collect_edges(c, ntrans);
+
+    // ── kNN sparsification ──────────────────────────────────────────
+    const int knn = Cluster::knn;
+
+    if (knn >= 0 && ntrans > 2) {
+        int effective_k;
+
+        if (knn == 0) {
+            // Auto mode: connectivity-constrained minimum k
+            // Step 1: run Leiden on full graph to get target community count
+            igraph_t full_graph;
+            igraph_vector_t full_weights;
+            build_igraph(edges, ntrans, &full_graph, &full_weights);
+
+            double first_resolution = static_cast<double>(thresholds.begin()->first);
+            LeidenResult full_result = run_leiden(&full_graph, &full_weights,
+                                                  first_resolution, ntrans);
+            int target_components = full_result.ncommunities;
+
+            igraph_vector_destroy(&full_weights);
+            igraph_destroy(&full_graph);
+
+            // Step 2: binary search for minimum k preserving connectivity
+            effective_k = find_optimal_k(edges, ntrans, target_components);
+
+            if (ntrans > 1000) {
+                size_t full_edges = edges.size();
+                EdgeList filtered = apply_knn(edges, ntrans, effective_k);
+                #pragma omp critical(print)
+                cout << "  kNN auto: k=" << effective_k
+                     << " (target " << target_components
+                     << " communities, " << full_edges
+                     << " -> " << filtered.size() << " edges)" << endl;
+                edges = std::move(filtered);
+            } else {
+                edges = apply_knn(edges, ntrans, effective_k);
+            }
+        } else {
+            // Fixed k mode
+            effective_k = std::min(knn, ntrans - 1);
+            edges = apply_knn(edges, ntrans, effective_k);
+        }
+    }
+
+    // Build igraph from (potentially kNN-filtered) edges
     igraph_t graph;
     igraph_vector_t weights;
-    build_graph(c, &graph, &weights, ntrans);
+    build_igraph(edges, ntrans, &graph, &weights);
 
     // Run Leiden at each threshold's resolution
     for (auto &[thr, label] : thresholds) {
-        igraph_vector_int_t igraph_membership;
-        igraph_vector_int_init(&igraph_membership, ntrans);
-        igraph_int_t nb_clusters = 0;
-        igraph_real_t quality = 0;
-
-        // CPM resolution = threshold value (edge weights are in [0,1])
         double resolution = static_cast<double>(thr);
-
-        igraph_community_leiden_simple(
-            &graph,
-            &weights,
-            IGRAPH_LEIDEN_OBJECTIVE_CPM,
-            resolution,
-            /* beta= */ 0.01,
-            /* start= */ 0,          // fresh partition
-            /* n_iterations= */ -1,  // iterate until convergence
-            &igraph_membership,
-            &nb_clusters,
-            &quality
-        );
-
-        // Convert igraph membership to std::vector
-        int ncomm = static_cast<int>(nb_clusters);
-        vector<int> membership(ntrans);
-        for (int i = 0; i < ntrans; i++)
-            membership[i] = static_cast<int>(VECTOR(igraph_membership)[i]);
-
-        igraph_vector_int_destroy(&igraph_membership);
-
-        output_leiden(c, label, ncomm, membership);
+        LeidenResult result = run_leiden(&graph, &weights, resolution, ntrans);
+        output_leiden(c, label, result.ncommunities, result.membership, method_tag);
     }
 
-    // Cleanup
     igraph_vector_destroy(&weights);
     igraph_destroy(&graph);
 }

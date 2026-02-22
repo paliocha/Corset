@@ -327,8 +327,14 @@ void print_usage() {
          << "  -l <int>          Min reads for a link (corset/salmon_eq_classes mode). Default: 1\n"
          << "  -x <int>          Max alignments per read (corset/salmon_eq_classes mode).\n"
          << "  -t <int>          Threads for parallel clustering. Default: auto\n"
-         << "  --algorithm <str> Clustering algorithm: hierarchical (default) or leiden.\n"
+         << "  --algorithm <str> Clustering algorithm: hierarchical (default), leiden, or both.\n"
          << "                    Leiden uses -d thresholds as CPM resolution values.\n"
+         << "                    'both' outputs h- and l- prefixed files for comparison.\n"
+         << "  --lrt-softness <float>  Sigmoid steepness for soft LRT (Leiden only). Default: 0 (hard cutoff).\n"
+         << "                    Recommended starting point: 2.0 for gentle sigmoid decay.\n"
+         << "  --knn <int|auto>  kNN graph sparsification (Leiden only). Default: disabled.\n"
+         << "                    'auto' = connectivity-constrained adaptive k per super-cluster.\n"
+         << "                    <int> = fixed global k for all super-clusters.\n"
          << "  -v, --version     Print version and exit.\n"
          << "  -h, --help        Print this help message and exit.\n"
          << "\n"
@@ -370,18 +376,34 @@ int main(int argc, char **argv) {
             string val(argv[i + 1]);
             if (val == "hierarchical") {
                 Cluster::algorithm = ClusterAlgorithm::Hierarchical;
-            } else if (val == "leiden") {
+            } else if (val == "leiden" || val == "both") {
 #ifdef HAVE_IGRAPH
-                Cluster::algorithm = ClusterAlgorithm::Leiden;
+                Cluster::algorithm = (val == "leiden")
+                    ? ClusterAlgorithm::Leiden
+                    : ClusterAlgorithm::Both;
 #else
-                cerr << "ERROR: Leiden requires igraph. Rebuild with --with-igraph=DIR." << endl;
+                cerr << "ERROR: " << val << " requires igraph. Rebuild with --with-igraph=DIR." << endl;
                 exit(1);
 #endif
             } else {
                 cerr << "ERROR: Unknown algorithm '" << val
-                     << "'. Choose 'hierarchical' or 'leiden'." << endl;
+                     << "'. Choose 'hierarchical', 'leiden', or 'both'." << endl;
                 exit(1);
             }
+            argv[i] = nullptr; argv[++i] = nullptr;
+            continue;
+        }
+        if (arg == "--lrt-softness" && i + 1 < argc) {
+            Cluster::lrt_softness = std::stof(string(argv[i + 1]));
+            argv[i] = nullptr; argv[++i] = nullptr;
+            continue;
+        }
+        if (arg == "--knn" && i + 1 < argc) {
+            string val(argv[i + 1]);
+            if (val == "auto")
+                Cluster::knn = 0;
+            else
+                Cluster::knn = std::stoi(val);
             argv[i] = nullptr; argv[++i] = nullptr;
             continue;
         }
@@ -397,10 +419,31 @@ int main(int argc, char **argv) {
     cout << "\nRunning Corset Version " << VERSION << endl;
     cout << "Using " << omp_get_max_threads()
          << " threads (set OMP_NUM_THREADS or use -t to override)" << endl;
-    if (Cluster::algorithm == ClusterAlgorithm::Leiden)
+    if (Cluster::algorithm == ClusterAlgorithm::Both)
+        cout << "Algorithm: both (hierarchical + Leiden comparison)" << endl;
+    else if (Cluster::algorithm == ClusterAlgorithm::Leiden)
         cout << "Algorithm: Leiden (CPM, resolution from -d thresholds)" << endl;
     else
         cout << "Algorithm: hierarchical" << endl;
+
+    // Warn if Leiden-only flags used with hierarchical-only mode
+    if (Cluster::algorithm == ClusterAlgorithm::Hierarchical) {
+        if (Cluster::lrt_softness > 0.0f) {
+            cerr << "WARNING: --lrt-softness ignored (only applies to Leiden)" << endl;
+            Cluster::lrt_softness = 0.0f;
+        }
+        if (Cluster::knn >= 0) {
+            cerr << "WARNING: --knn ignored (only applies to Leiden)" << endl;
+            Cluster::knn = -1;
+        }
+    }
+
+    if (Cluster::lrt_softness > 0.0f)
+        cout << "LRT softness: " << Cluster::lrt_softness << " (sigmoid decay)" << endl;
+    if (Cluster::knn == 0)
+        cout << "kNN: auto (connectivity-constrained per super-cluster)" << endl;
+    else if (Cluster::knn > 0)
+        cout << "kNN: " << Cluster::knn << " (fixed)" << endl;
 
     // Allow two levels of parallelism: outer (super-clusters) + inner (merge)
     omp_set_max_active_levels(2);
@@ -600,28 +643,38 @@ int main(int argc, char **argv) {
              << Transcript::groups << ")" << endl;
     }
 
+    // Determine method tags for output files
+    vector<string> method_tags;
+    if (Cluster::algorithm == ClusterAlgorithm::Both)
+        method_tags = {"h-", "l-"};
+    else
+        method_tags = {""};
+
     // Check / create output files
     for (auto it = distance_thresholds.begin();
          !stop_after_read && it != distance_thresholds.end(); ++it) {
         std::string_view types[] = {Cluster::file_counts, Cluster::file_clusters};
-        for (int t = 0; t < 2; t++) {
-            string fn = Cluster::file_prefix + string(types[t]) + it->second + string(Cluster::file_ext);
-            ifstream probe(fn);
-            if (probe.good()) {
-                if (force && remove(fn.c_str()) != 0) {
-                    cerr << "Could not replace the file, " << fn << endl;
-                    exit(1);
-                } else if (!force) {
-                    cerr << "File already exists, " << fn
-                         << ". Use \"-f true\" to overwrite." << endl;
-                    exit(1);
+        for (const auto &tag : method_tags) {
+            for (int t = 0; t < 2; t++) {
+                string fn = Cluster::file_prefix + tag + string(types[t])
+                          + it->second + string(Cluster::file_ext);
+                ifstream probe(fn);
+                if (probe.good()) {
+                    if (force && remove(fn.c_str()) != 0) {
+                        cerr << "Could not replace the file, " << fn << endl;
+                        exit(1);
+                    } else if (!force) {
+                        cerr << "File already exists, " << fn
+                             << ". Use \"-f true\" to overwrite." << endl;
+                        exit(1);
+                    }
                 }
+                probe.close();
+                ofstream ofile(fn);
+                if (types[t] == Cluster::file_counts)
+                    ofile << '\t' + sample_names << endl;
+                ofile.close();
             }
-            probe.close();
-            ofstream ofile(fn);
-            if (types[t] == Cluster::file_counts)
-                ofile << '\t' + sample_names << endl;
-            ofile.close();
         }
     }
 
@@ -649,11 +702,14 @@ int main(int argc, char **argv) {
             if (Transcript::min_counts == 0) {
                 n++;
                 for (auto &dis : distance_thresholds) {
-                    string fn = Cluster::file_prefix + string(Cluster::file_clusters)
-                                + dis.second + string(Cluster::file_ext);
-                    ofstream clusterFile(fn, std::ios_base::app);
-                    clusterFile << transcript->get_name() << "\t"
-                                << Cluster::cluster_id_prefix_no_reads << n << "\n";
+                    for (const auto &tag : method_tags) {
+                        string fn = Cluster::file_prefix + tag
+                                    + string(Cluster::file_clusters)
+                                    + dis.second + string(Cluster::file_ext);
+                        ofstream clusterFile(fn, std::ios_base::app);
+                        clusterFile << transcript->get_name() << "\t"
+                                    << Cluster::cluster_id_prefix_no_reads << n << "\n";
+                    }
                 }
             }
             transcript->remove();

@@ -95,6 +95,22 @@ Thread count defaults to `OMP_NUM_THREADS`; override with `-t <int>`.
     # Leiden community detection:
     corset --algorithm leiden -i salmon_eq_classes -d 0.3 -g g1,g1,g2,g2 *.sf
 
+    # Leiden with soft LRT and adaptive kNN:
+    corset --algorithm leiden --lrt-softness 2.0 --knn auto \
+           -i salmon_eq_classes -d 0.3 -g g1,g1,g2,g2 *.sf
+
+    # Comparison mode (outputs h- and l- prefixed files):
+    corset --algorithm both -p my_prefix \
+           -i salmon_eq_classes -d 0.3 -g g1,g1,g2,g2 *.sf
+
+### Leiden-specific options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lrt-softness <float>` | `0` (hard cutoff) | Sigmoid steepness for soft LRT decay around D_cut. Recommended: `2.0`. |
+| `--knn <int\|auto>` | disabled | kNN graph sparsification. `auto` = connectivity-constrained adaptive k per super-cluster. `<int>` = fixed global k. |
+| `--algorithm both` | — | Run hierarchical and Leiden in parallel, output `h-` and `l-` prefixed files for comparison. |
+
 More help: https://github.com/Oshlack/Corset/wiki
 
 
@@ -161,13 +177,30 @@ edges.  The `-d` threshold is passed as the CPM resolution parameter
 - *Full-precision edge weights* — no quantization to 256 levels as in
   the hierarchical distance matrix.
 
+**Optional enhancements (Leiden only):**
+
+- *Soft LRT* (`--lrt-softness`) — replaces the binary LRT gate with a
+  sigmoid decay centred at D_cut.  Borderline-differential transcript
+  pairs receive a smoothly down-weighted edge instead of hard exclusion.
+  This is analogous to DESeq2's shrunken log-fold-changes: uncertain
+  pairs contribute proportionally rather than being all-or-nothing.
+- *kNN sparsification* (`--knn auto` or `--knn <int>`) — for each
+  super-cluster, keeps only the k highest-weight edges per node before
+  running Leiden.  Removes spurious low-weight edges from dense
+  super-clusters, improving community quality and speed.  In `auto`
+  mode, uses a connectivity-constrained binary search (O(log sqrt(n))
+  BFS passes) to find the minimum k that preserves the graph's natural
+  community structure.
+
 **Limitations:**
 
 - *Soft LRT enforcement* — the LRT filters edges at graph construction
   time (differentially expressed pairs have no edge), but the CPM
   optimizer considers total community quality.  Two transcripts with no
   direct edge can still land in the same community through intermediate
-  nodes with sufficient total edge weight.
+  nodes with sufficient total edge weight.  `--lrt-softness` mitigates
+  this by smoothly down-weighting borderline pairs rather than
+  hard-zeroing them.
 - *Flat partitions* — each `-d` value produces an independent partition;
   partitions at different resolutions are not guaranteed to be nested.
 - *Seeded-stochastic* — the Leiden algorithm depends on random node
