@@ -2,9 +2,9 @@ Corset — v1.10.0
 =================
 
 Fork of [Oshlack/Corset](https://github.com/Oshlack/Corset) v1.09.
-OpenMP parallelism, htslib 1.23, C++23, and algorithmic optimisations
-that reduce wall-clock time from **16+ hours to ~3.5 minutes** on
-real RNA-Seq data.
+OpenMP parallelism, htslib 1.23, C++23, optional Leiden community
+detection (igraph), and algorithmic optimisations that reduce
+wall-clock time from **16+ hours to ~3.5 minutes** on real RNA-Seq data.
 
 Original author: Nadia Davidson (MCRI, Australia).
 OpenMP/htslib/C++23 port: Martin Paliocha, 2026.
@@ -59,6 +59,7 @@ Requirements
 - GCC 13+ with C++23 support
 - htslib 1.23+ (headers + library)
 - zlib, libbz2, liblzma, libcurl, libdeflate
+- **Optional:** igraph 1.0+ (for `--algorithm leiden`)
 
 
 Installation
@@ -72,6 +73,13 @@ To specify a non-system htslib:
 
     ./configure --with-htslib=/path/to/htslib/prefix
 
+To enable Leiden clustering (optional):
+
+    ./configure --with-htslib=/path/to/htslib --with-igraph=/path/to/igraph
+
+If igraph is not found, Corset builds without Leiden support.
+Running `--algorithm leiden` without igraph prints an error and exits.
+
 
 Running
 -------
@@ -81,6 +89,12 @@ Running
 Type `corset` with no arguments for usage information.
 Thread count defaults to `OMP_NUM_THREADS`; override with `-t <int>`.
 
+    # Default (hierarchical clustering):
+    corset -i salmon_eq_classes -d 0.3 -g g1,g1,g2,g2 *.sf
+
+    # Leiden community detection:
+    corset --algorithm leiden -i salmon_eq_classes -d 0.3 -g g1,g1,g2,g2 *.sf
+
 More help: https://github.com/Oshlack/Corset/wiki
 
 
@@ -89,6 +103,97 @@ Container (Apptainer/Singularity)
 
     cd containers/corset
     apptainer build --fakeroot corset_1.10.sif Corset.def
+
+
+Clustering algorithms
+---------------------
+
+Corset v1.10 supports two clustering back-ends.  Both share the same
+biological foundation: edges are shared-read proportions filtered by a
+log-likelihood ratio (LRT) expression test.  They differ in how those
+edges are used to form transcript clusters.
+
+### Hierarchical agglomerative clustering (default)
+
+Custom agglomerative algorithm from the original Corset paper
+(Davidson & Oshlack 2014).  At each step the closest pair of
+transcript groups is merged, provided the LRT does not detect
+differential expression between experimental conditions.  The `-d`
+threshold is a distance cutoff: merging stops when the next pair's
+shared-read proportion drops below it.
+
+**Strengths:**
+
+- *Strict LRT enforcement* — the expression test is a hard gate at
+  every merge decision.  If two groups are differentially expressed,
+  they are guaranteed to remain separate.
+- *Nested output* — multiple `-d` thresholds produce hierarchically
+  consistent cluster assignments.  Clusters at `-d 0.5` are strict
+  unions of clusters at `-d 0.3`.
+- *Fully deterministic* — identical inputs always produce identical
+  cluster assignments, gene-count matrices, and downstream DE results.
+  This matters for regulated or archival workflows where bit-exact
+  reproducibility is required, and for publication where reviewers
+  expect identical results from identical inputs.
+
+**Limitation:**
+
+- O(n²) per super-cluster.  Optimised with adjacency-list merges,
+  SSE2 intersection, and parallel distance recomputation, but can
+  still be slow for outlier super-clusters with >50k transcripts.
+
+### Leiden community detection (`--algorithm leiden`)
+
+Near-linear O(E log n) community detection via igraph's Constant Potts
+Model (CPM) implementation (Traag, Waltman & van Eck 2019).  The same
+`get_dist()` function builds the graph: transcript pairs with
+non-zero shared-read proportion (after LRT filtering) become weighted
+edges.  The `-d` threshold is passed as the CPM resolution parameter
+(gamma = minimum internal edge density for a community).
+
+**Strengths:**
+
+- *Scalable* — near-linear time makes super-clusters with 500k+
+  transcripts tractable where hierarchical clustering would take hours.
+- *Resolution-limit free* — CPM is mathematically free of the
+  resolution limit that makes modularity-based methods unable to
+  detect small communities in large graphs.
+- *Full-precision edge weights* — no quantization to 256 levels as in
+  the hierarchical distance matrix.
+
+**Limitations:**
+
+- *Soft LRT enforcement* — the LRT filters edges at graph construction
+  time (differentially expressed pairs have no edge), but the CPM
+  optimizer considers total community quality.  Two transcripts with no
+  direct edge can still land in the same community through intermediate
+  nodes with sufficient total edge weight.
+- *Flat partitions* — each `-d` value produces an independent partition;
+  partitions at different resolutions are not guaranteed to be nested.
+- *Seeded-stochastic* — the Leiden algorithm depends on random node
+  visitation order.  The implementation seeds igraph's RNG per
+  super-cluster for reproducibility across runs with identical inputs
+  and thread counts.  However, the stochasticity is algorithmic, not
+  biological: different runs may split a borderline community
+  differently, which can shift read counts for marginal genes near the
+  DE significance threshold.
+
+### When to use which
+
+| Criterion | Hierarchical | Leiden |
+|-----------|:------------:|:------:|
+| Super-clusters <50k transcripts | preferred | works |
+| Super-clusters >50k transcripts | slow | preferred |
+| Strict expression-test enforcement | yes | approximate |
+| Nested multi-resolution output | yes | no |
+| Bit-exact reproducibility | yes | seeded-reproducible |
+| Resolution-limit free | n/a | yes |
+
+For exploratory analyses or when downstream DE testing (e.g., DESeq2 /
+edgeR at the gene level) will re-evaluate significance, Leiden's
+bounded stochasticity and soft LRT enforcement are acceptable
+trade-offs for the speed improvement.  For archival workflows requiring
+strict determinism and hard LRT gating, hierarchical is safer.
 
 
 Key changes from v1.09
@@ -107,7 +212,8 @@ Key changes from v1.09
 - **Weighted union-find** for super-cluster construction
 
 ### Architecture
-- OpenMP parallel hierarchical clustering across super-clusters
+- OpenMP parallel clustering across super-clusters (hierarchical or Leiden)
+- Optional Leiden community detection via igraph CPM (`--algorithm leiden`)
 - htslib 1.23 (replacing samtools 0.x inline API)
 - Full C++23 standard (GCC 13, `-std=c++23`)
 
@@ -120,4 +226,4 @@ GNU General Public License.
 
 
 ----
-Last Modified, M. Paliocha, 21 February 2026
+Last Modified, M. Paliocha, 22 February 2026
