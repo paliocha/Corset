@@ -560,8 +560,12 @@ int main(int argc, char **argv) {
     }
 
     // Default D_cut based on degrees of freedom
-    if (Cluster::D_cut == 0)
+    if (Cluster::D_cut == 0) {
         Cluster::D_cut = 17.5f + 2.5f * (Transcript::groups - 1);
+        cout << "D threshold not provided; using D = "
+             << Cluster::D_cut << " (groups = "
+             << Transcript::groups << ")" << endl;
+    }
 
     // Check / create output files
     for (auto it = distance_thresholds.begin();
