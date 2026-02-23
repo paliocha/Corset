@@ -60,6 +60,49 @@ struct EdgeList {
 };
 
 
+// ── Direct pairwise edge collection ─────────────────────────────────
+// Computes get_dist() for all C(ntrans, 2) pairs directly.  Avoids the
+// O(nreads × alignments²) read-based pair enumeration that dominates
+// for small super-clusters with highly multi-mapped reads (common in
+// de novo transcriptomes).  Cost: O(ntrans² × nsamples × avg_reads)
+// for the sorted-list intersections inside get_dist().
+//
+// Used when the cost of direct pairwise (C(ntrans,2) get_dist calls)
+// is cheaper than read-based enumeration (Σ C(alignments,2) hash ops).
+
+static constexpr int DIRECT_EDGE_MAX = 20000;
+
+// Estimate cost of read-based pair enumeration: Σ C(alignments_r, 2).
+// Returns true when direct pairwise (C(ntrans,2) get_dist calls) is cheaper.
+static bool prefer_direct(Cluster *c, int ntrans) {
+    if (ntrans > DIRECT_EDGE_MAX) return false;
+    int64_t direct_cost = static_cast<int64_t>(ntrans) * (ntrans - 1) / 2;
+    int64_t read_cost = 0;
+    for (int r = 0; r < c->n_reads(); r++) {
+        int a = c->get_read(r)->alignments();
+        read_cost += static_cast<int64_t>(a) * (a - 1) / 2;
+        if (read_cost > direct_cost) return true;  // early out
+    }
+    return false;
+}
+
+static EdgeList collect_edges_direct(Cluster *c, int ntrans) {
+    const float softness = Cluster::lrt_softness;
+    EdgeList edges;
+    for (int i = 0; i < ntrans; i++) {
+        for (int j = 0; j < i; j++) {
+            float d = c->get_dist(i, j, softness);
+            if (d > 0.0f) {
+                edges.src.push_back(i);
+                edges.dst.push_back(j);
+                edges.wt.push_back(static_cast<double>(d));
+            }
+        }
+    }
+    return edges;
+}
+
+
 // ── Collect edges from shared reads (hash-based dedup) ──────────────
 // Uses FlatDistMap as a seen-set for O(1) dedup per raw pair.
 // Replaces the old sort+unique approach: O(N) vs O(N log N), and
@@ -439,14 +482,27 @@ static vector<int> get_counts_leiden(Cluster *c,
         }
     }
 
-    // Randomly assign each read to one of its communities
+    // Assign each read's weight to one of its communities.
+    // When a read maps to exactly one community (common case), add weight
+    // directly — avoids an O(weight) loop per equivalence class.
     vector<int> counts(ncommunities, 0);
     for (int rd = 0; rd < nreads; rd++) {
         int n_align = static_cast<int>(read_to_comm[rd].size());
         if (n_align == 0) continue;
         int weight = c->get_read(rd)->get_weight();
-        for (; weight > 0; weight--)
-            counts[read_to_comm[rd][rand_r(&seed) % n_align]]++;
+        if (n_align == 1) {
+            counts[read_to_comm[rd][0]] += weight;
+        } else {
+            // O(n_align) even-division instead of O(weight) random loop.
+            // Expected value identical; for large weights the stochastic
+            // variance is negligible (< sqrt(weight)).
+            int per = weight / n_align;
+            int remainder = weight % n_align;
+            for (int c = 0; c < n_align; c++)
+                counts[read_to_comm[rd][c]] += per;
+            for (int r = 0; r < remainder; r++)
+                counts[read_to_comm[rd][rand_r(&seed) % n_align]]++;
+        }
     }
 
     // Add direct counts per Leiden community
@@ -532,9 +588,12 @@ int cluster_leiden(Cluster *c,
                    vector<int> *cluster_sizes,
                    map<string, string> *file_buf) {
     const int ntrans = c->n_trans();
+    const int nreads = c->n_reads();
 
     // Always set up read-group data (needed for get_dist and count output)
+    double t_setup = omp_get_wtime();
     c->setup_read_groups();
+    double t_after_setup = omp_get_wtime();
 
     if (ntrans <= 1) {
         for (auto &[thr, label] : thresholds) {
@@ -555,18 +614,31 @@ int cluster_leiden(Cluster *c,
              << endl;
     }
 
-    double t0 = omp_get_wtime();
+    double t0 = t_after_setup;
     const int knn = Cluster::knn;
     const double first_resolution = static_cast<double>(thresholds.begin()->first);
     EdgeList edges;
+    double t_edges = 0, t_ref = 0, t_search = 0;
 
-    if (knn == 0 && ntrans > 2) {
+    // Decide edge-collection strategy: direct pairwise (O(ntrans²) get_dist
+    // calls) vs read-based enumeration (O(Σ C(alignments,2)) hash ops).
+    // Direct wins when reads are heavily multi-mapped (de novo transcriptomes).
+    const bool use_direct = ntrans > 2 && prefer_direct(c, ntrans);
+
+    if (knn == 0 && use_direct) {
+        // ── kNN auto, direct pairwise cheaper than read-based enumeration ──
+        // Full graph is tractable — skip kNN sparsification entirely.
+        edges = collect_edges_direct(c, ntrans);
+        t_edges = omp_get_wtime() - t0;
+
+    } else if (knn == 0 && ntrans > 2) {
         // ── kNN auto: two-phase construction + quality-preserving search ──
         int k_max = static_cast<int>(std::ceil(std::sqrt(ntrans)));
 
         // Two-phase: cheap proxy ranking then get_dist on K_max candidates
         edges = collect_edges_knn(c, ntrans, k_max);
         double t1 = omp_get_wtime();
+        t_edges = t1 - t0;
 
         // kNN search only meaningful when edges exist (all-zero get_dist
         // produces an empty graph → singletons regardless of k)
@@ -580,12 +652,14 @@ int cluster_leiden(Cluster *c,
             igraph_vector_destroy(&ref_weights);
             igraph_destroy(&ref_graph);
             double t2 = omp_get_wtime();
+            t_ref = t2 - t1;
 
             // Quality-preserving binary search for minimum k
             int best_k = find_optimal_k(edges, ntrans, first_resolution,
                                         ref_result,
                                         large ? c->get_id() : -1);
             double t3 = omp_get_wtime();
+            t_search = t3 - t2;
 
             size_t full_edges = edges.size();
             edges = apply_knn(edges, ntrans, best_k);
@@ -600,23 +674,36 @@ int cluster_leiden(Cluster *c,
                          << " -> " << progress::format_count(static_cast<int64_t>(edges.size()))
                          << " edges)" << endl;
                     cout << progress::ansi::dim(
-                            "    [edges=" + progress::format_duration(t1 - t0)
-                            + " ref=" + progress::format_duration(t2 - t1)
-                            + " search=" + progress::format_duration(t3 - t2) + "]")
+                            "    [edges=" + progress::format_duration(t_edges)
+                            + " ref=" + progress::format_duration(t_ref)
+                            + " search=" + progress::format_duration(t_search) + "]")
                          << endl;
                 }
             }
         }
+
+    } else if (knn > 0 && use_direct) {
+        // ── Fixed k, direct pairwise then kNN filter ──
+        edges = collect_edges_direct(c, ntrans);
+        edges = apply_knn(edges, ntrans, std::min(knn, ntrans - 1));
+        t_edges = omp_get_wtime() - t0;
 
     } else if (knn > 0 && ntrans > 2) {
         // ── Fixed k: two-phase with generous K_max, then filter ──
         int k_max = std::min(2 * knn, ntrans - 1);
         edges = collect_edges_knn(c, ntrans, k_max);
         edges = apply_knn(edges, ntrans, std::min(knn, ntrans - 1));
+        t_edges = omp_get_wtime() - t0;
+
+    } else if (use_direct) {
+        // ── No kNN, direct pairwise ──
+        edges = collect_edges_direct(c, ntrans);
+        t_edges = omp_get_wtime() - t0;
 
     } else {
         // ── No kNN: hash-dedup, all edges ──
         edges = collect_edges(c, ntrans);
+        t_edges = omp_get_wtime() - t0;
     }
 
     int nedges = static_cast<int>(edges.size());
@@ -627,6 +714,7 @@ int cluster_leiden(Cluster *c,
     build_igraph(edges, ntrans, &graph, &weights);
 
     // Run Leiden at each threshold's resolution
+    double t_before_output = omp_get_wtime();
     for (auto &[thr, label] : thresholds) {
         double resolution = static_cast<double>(thr);
         LeidenResult result = run_leiden(&graph, &weights, resolution, ntrans);
@@ -639,18 +727,33 @@ int cluster_leiden(Cluster *c,
                 (*cluster_sizes)[m]++;
         }
     }
+    double t_output = omp_get_wtime() - t_before_output;
 
     igraph_vector_destroy(&weights);
     igraph_destroy(&graph);
 
+    double t_end = omp_get_wtime();
+    double t_total = t_end - t_setup;
+
     if (large) {
-        double t_end = omp_get_wtime();
         #pragma omp critical(print)
         cout << progress::ansi::green(
                 "    SC " + std::to_string(c->get_id()) + " done: "
-                + progress::format_duration(t_end - t0) + " ("
+                + progress::format_duration(t_total) + " ("
                 + progress::format_count(nedges) + " edges)")
              << endl;
+    }
+
+    // Diagnostic: log any SC taking >1s (catches slow small SCs)
+    if (!large && t_total > 1.0) {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+                      "    \xe2\x9a\xa0 SC %d: %d transcripts, %d reads, %d edges, "
+                      "%.1fs total [setup=%.1fs edges=%.1fs ref=%.1fs search=%.1fs output=%.1fs]",
+                      c->get_id(), ntrans, nreads, nedges,
+                      t_total, t_after_setup - t_setup, t_edges, t_ref, t_search, t_output);
+        #pragma omp critical(print)
+        cout << progress::ansi::yellow(buf) << endl;
     }
 
     return nedges;

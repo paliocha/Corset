@@ -19,7 +19,7 @@ export OMP_NUM_THREADS=32
 export LD_LIBRARY_PATH="${CONDA_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 mkdir -p "$OUTDIR"
-cd "$OUTDIR"
+cd "$TMPDIR"
 
 # ── Stage eq_classes symlinks ────────────────────────────────────────
 declare -A QUANT_DIRS=(
@@ -67,7 +67,7 @@ declare -A QUANT_DIRS=(
 
 for sample in "${!QUANT_DIRS[@]}"; do
     target="${WORKBASE}/${QUANT_DIRS[$sample]}/${sample}_quant"
-    link="${OUTDIR}/${sample}_quant"
+    link="${TMPDIR}/${sample}_quant"
     ln -sfn "$target" "$link"
 done
 
@@ -157,3 +157,9 @@ ls -lh test-*.txt 2>/dev/null || echo "  (none found)"
 echo ""
 echo "Line counts:"
 wc -l test-*.txt 2>/dev/null || echo "  (none found)"
+
+# ── Copy results from local scratch back to NFS ─────────────────────
+echo ""
+echo "Copying output files to $OUTDIR ..."
+cp -v test-*.txt "$OUTDIR/" 2>/dev/null || echo "  (no output files to copy)"
+echo "Done."

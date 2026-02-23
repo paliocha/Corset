@@ -14,8 +14,10 @@
 #include <ranges>
 #include <omp.h>
 
-#ifdef __SSE2__
-#include <emmintrin.h>   // SSE2 — guaranteed on x86_64
+#if defined(__AVX512F__) || defined(__AVX2__)
+#include <immintrin.h>
+#elif defined(__SSE2__)
+#include <emmintrin.h>
 #endif
 
 using std::cout;
@@ -64,23 +66,52 @@ float Cluster::get_dist(int i, int j, float lrt_softness) {
 
         int pi = 0, pj = 0;
 
-#ifdef __SSE2__
-        // ── SIMD block intersection ────────────────────────────────────
-        // Process list A in blocks of 4: for each block, compare all
-        // qualifying B elements via _mm_cmpeq_epi32 (4 comparisons in
-        // one instruction).  Falls through to scalar for the remainder.
-        while (pi + 3 < ni && pj < nj) {
-            __m128i va  = _mm_loadu_si128(reinterpret_cast<const __m128i *>(a + pi));
-            int a_max = a[pi + 3];
+#if defined(__AVX512F__)
+        // ── AVX-512 block intersection (16-wide) ────────────────────────
+        while (pi + 15 < ni && pj < nj) {
+            __m512i va = _mm512_loadu_si512(a + pi);
+            int a_max = a[pi + 15];
             int a_min = a[pi];
-
-            // Process all b[pj] that fall within [a_min, a_max]
             while (pj < nj && b[pj] <= a_max) {
                 if (b[pj] < a_min) { ++pj; continue; }
-                __m128i vb  = _mm_set1_epi32(b[pj]);
-                __m128i eq  = _mm_cmpeq_epi32(va, vb);
-                int mask = _mm_movemask_ps(_mm_castsi128_ps(eq));
+                __mmask16 mask = _mm512_cmpeq_epi32_mask(
+                    va, _mm512_set1_epi32(b[pj]));
                 if (mask)
+                    sample_shared_read[s] += get_read(b[pj])->get_weight();
+                ++pj;
+            }
+            pi += 16;
+        }
+#endif
+#if defined(__AVX2__)
+        // ── AVX2 block intersection (8-wide) ────────────────────────────
+        while (pi + 7 < ni && pj < nj) {
+            __m256i va = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i *>(a + pi));
+            int a_max = a[pi + 7];
+            int a_min = a[pi];
+            while (pj < nj && b[pj] <= a_max) {
+                if (b[pj] < a_min) { ++pj; continue; }
+                __m256i eq = _mm256_cmpeq_epi32(
+                    va, _mm256_set1_epi32(b[pj]));
+                if (_mm256_movemask_epi8(eq))
+                    sample_shared_read[s] += get_read(b[pj])->get_weight();
+                ++pj;
+            }
+            pi += 8;
+        }
+#elif defined(__SSE2__)
+        // ── SSE2 block intersection (4-wide) ────────────────────────────
+        while (pi + 3 < ni && pj < nj) {
+            __m128i va = _mm_loadu_si128(
+                reinterpret_cast<const __m128i *>(a + pi));
+            int a_max = a[pi + 3];
+            int a_min = a[pi];
+            while (pj < nj && b[pj] <= a_max) {
+                if (b[pj] < a_min) { ++pj; continue; }
+                __m128i eq = _mm_cmpeq_epi32(
+                    va, _mm_set1_epi32(b[pj]));
+                if (_mm_movemask_ps(_mm_castsi128_ps(eq)))
                     sample_shared_read[s] += get_read(b[pj])->get_weight();
                 ++pj;
             }
@@ -306,14 +337,25 @@ vector<int> Cluster::get_counts(int s) {
         }
     }
 
-    // Randomly assign each read to one of its clusters
+    // Assign each read's weight to one of its clusters.
+    // When a read maps to exactly one cluster (common case), add weight
+    // directly — avoids an O(weight) loop per equivalence class.
     vector<int> counts(nclusters, 0);
     for (int rd = 0; rd < nreads; rd++) {
         int n_align = static_cast<int>(read_to_clusters[rd].size());
         if (n_align == 0) continue;
         int weight = get_read(rd)->get_weight();
-        for (; weight > 0; weight--)
-            counts[read_to_clusters[rd][rand_r(&seed) % n_align]]++;
+        if (n_align == 1) {
+            counts[read_to_clusters[rd][0]] += weight;
+        } else {
+            // O(n_align) even-division instead of O(weight) random loop.
+            int per = weight / n_align;
+            int remainder = weight % n_align;
+            for (int c = 0; c < n_align; c++)
+                counts[read_to_clusters[rd][c]] += per;
+            for (int r = 0; r < remainder; r++)
+                counts[read_to_clusters[rd][rand_r(&seed) % n_align]]++;
+        }
     }
 
     // Add direct counts — each transcript maps to exactly one cluster group

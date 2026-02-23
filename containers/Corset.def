@@ -54,7 +54,7 @@ From: ubuntu:24.04
     # ---------- build corset ----------
     cd /opt/corset
     autoconf configure.in > configure && chmod +x configure
-    ./configure --with-htslib=/usr/local --with-igraph=/usr/local
+    ./configure --with-htslib=/usr/local --with-igraph=/usr/local --enable-native
     make clean
     make -j$(nproc)
     make install prefix=/usr/local

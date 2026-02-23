@@ -82,6 +82,14 @@ else
 fi
 AC_SUBST(IGRAPH_OBJ)
 
+# ---------- native CPU optimizations (optional) ----------
+AC_ARG_ENABLE(native, [  --enable-native
+                  enable -march=native for CPU-specific optimizations (AVX2, AVX-512)])
+if test "$enable_native" = "yes"; then
+    CXXFLAGS="$CXXFLAGS -march=native"
+    AC_MSG_RESULT([native CPU optimizations enabled (-march=native)])
+fi
+
 AC_CONFIG_FILES([Makefile])
 
 my_save_cflags="$CXXFLAGS"

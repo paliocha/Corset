@@ -680,6 +680,7 @@ ac_user_opts='
 enable_option_checking
 with_htslib
 with_igraph
+enable_native
 '
       ac_precious_vars='build_alias
 host_alias
@@ -1306,6 +1307,13 @@ if test -n "$ac_init_help"; then
      short | recursive ) echo "Configuration of corset 1.10.0:";;
    esac
   cat <<\_ACEOF
+
+Optional Features:
+  --disable-option-checking  ignore unrecognized --enable/--with options
+  --disable-FEATURE       do not include FEATURE (same as --enable-FEATURE=no)
+  --enable-FEATURE[=ARG]  include FEATURE [ARG=yes]
+  --enable-native
+                  enable -march=native for CPU-specific optimizations (AVX2, AVX-512)
 
 Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
@@ -3409,6 +3417,18 @@ else
     IGRAPH_OBJ=""
 fi
 
+
+# ---------- native CPU optimizations (optional) ----------
+# Check whether --enable-native was given.
+if test "${enable_native+set}" = set; then :
+  enableval=$enable_native;
+fi
+
+if test "$enable_native" = "yes"; then
+    CXXFLAGS="$CXXFLAGS -march=native"
+    { $as_echo "$as_me:${as_lineno-$LINENO}: result: native CPU optimizations enabled (-march=native)" >&5
+$as_echo "native CPU optimizations enabled (-march=native)" >&6; }
+fi
 
 ac_config_files="$ac_config_files Makefile"
 
