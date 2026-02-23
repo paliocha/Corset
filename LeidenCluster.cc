@@ -5,11 +5,13 @@
 //
 // Features:
 //   - Soft LRT weighting: sigmoid decay around D_cut (--lrt-softness)
-//   - Adaptive kNN sparsification: connectivity-constrained minimum-k
-//     per super-cluster (--knn auto), or fixed global k (--knn <int>)
+//   - Adaptive kNN sparsification: quality-preserving minimum-k per
+//     super-cluster (--knn auto), or fixed global k (--knn <int>)
+//   - Two-phase edge construction: hash-based pair enumeration with
+//     cheap proxy ranking, get_dist only on kNN candidates
 //
 // Author: Martin Paliocha, martin.paliocha@nmbu.no
-// Created 22 February 2026
+// Created 22 February 2026, last modified 23 February 2026
 
 #ifdef HAVE_IGRAPH
 
@@ -31,6 +33,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <ranges>
+#include <omp.h>
+#include <FlatDistMap.h>
 
 using std::cout;
 using std::endl;
@@ -56,42 +60,129 @@ struct EdgeList {
 };
 
 
-// ── Collect edges from shared reads ─────────────────────────────────
-// Reuses Cluster::get_dist() which includes the LRT expression test.
-// Passes lrt_softness through so Leiden can use sigmoid decay.
+// ── Collect edges from shared reads (hash-based dedup) ──────────────
+// Uses FlatDistMap as a seen-set for O(1) dedup per raw pair.
+// Replaces the old sort+unique approach: O(N) vs O(N log N), and
+// peak memory is O(U) not O(N) where U << N = unique vs raw pairs.
 
 static EdgeList collect_edges(Cluster *c, int ntrans) {
-    // Collect non-zero transcript pairs from shared reads
-    vector<std::pair<int, int>> nz_pairs;
+    const auto nt64 = static_cast<uint64_t>(ntrans);
+    const float softness = Cluster::lrt_softness;
+
+    FlatDistMap seen;
+    seen.reserve(ntrans * 4);
+    EdgeList edges;
+
     for (int r = 0; r < c->n_reads(); r++) {
         Read *read = c->get_read(r);
         for (auto t1 = read->align_begin(); t1 != read->align_end(); ++t1) {
             int i = (*t1)->pos();
             for (auto t2 = read->align_begin(); t2 != t1; ++t2) {
                 int j = (*t2)->pos();
-                nz_pairs.emplace_back(std::max(i, j), std::min(i, j));
+                int hi = std::max(i, j), lo = std::min(i, j);
+                uint64_t key = nt64 * hi + lo;
+                if (!seen.contains(key)) {
+                    seen.set(key, 1);
+                    float d = c->get_dist(hi, lo, softness);
+                    if (d > 0.0f) {
+                        edges.src.push_back(hi);
+                        edges.dst.push_back(lo);
+                        edges.wt.push_back(static_cast<double>(d));
+                    }
+                }
+            }
+        }
+    }
+    return edges;
+}
+
+
+// ── Two-phase edge collection for kNN modes ─────────────────────────
+// Phase 1: Enumerate unique pairs via hash, count occurrences as a
+//          cheap proxy for distance (more shared reads → likely higher
+//          distance).  Uses FlatDistMap saturating counter (0-255).
+// Phase 1b: Per-node, keep top-k_max neighbors by proxy score.
+//           Symmetric kNN: keep if EITHER endpoint selects it.
+// Phase 2: Compute get_dist() only on selected candidates.
+// Avoids calling the expensive get_dist() on pairs that kNN will
+// discard — decisive for dense super-clusters.
+
+static EdgeList collect_edges_knn(Cluster *c, int ntrans, int k_max) {
+    const auto nt64 = static_cast<uint64_t>(ntrans);
+    const float softness = Cluster::lrt_softness;
+
+    // ── Phase 1: Hash-based pair enumeration with occurrence counting ──
+    FlatDistMap pair_counts;
+    pair_counts.reserve(ntrans * 4);
+    vector<vector<int>> node_adj(ntrans);
+
+    for (int r = 0; r < c->n_reads(); r++) {
+        Read *read = c->get_read(r);
+        for (auto t1 = read->align_begin(); t1 != read->align_end(); ++t1) {
+            int i = (*t1)->pos();
+            for (auto t2 = read->align_begin(); t2 != t1; ++t2) {
+                int j = (*t2)->pos();
+                int hi = std::max(i, j), lo = std::min(i, j);
+                uint64_t key = nt64 * hi + lo;
+                unsigned char cur = pair_counts.get(key);
+                if (cur == 0) {
+                    node_adj[hi].push_back(lo);
+                    node_adj[lo].push_back(hi);
+                }
+                if (cur < 255) pair_counts.set(key, cur + 1);
             }
         }
     }
 
-    // Deduplicate
-    std::ranges::sort(nz_pairs);
-    auto [first, last] = std::ranges::unique(nz_pairs);
-    nz_pairs.erase(first, last);
+    // ── Phase 1b: Per-node top-k_max selection by proxy score ──
+    FlatDistMap selected;
+    selected.reserve(static_cast<size_t>(ntrans) * std::min(k_max, 64));
 
-    // Compute distances and collect edges with non-zero weight
-    EdgeList edges;
-    edges.reserve(nz_pairs.size());
-
-    const float softness = Cluster::lrt_softness;
-    for (auto &[hi, lo] : nz_pairs) {
-        float d = c->get_dist(hi, lo, softness);
-        if (d > 0.0f) {
-            edges.src.push_back(hi);
-            edges.dst.push_back(lo);
-            edges.wt.push_back(static_cast<double>(d));
+    for (int n = 0; n < ntrans; n++) {
+        auto &adj = node_adj[n];
+        if (static_cast<int>(adj.size()) <= k_max) {
+            for (int nb : adj) {
+                uint64_t key = nt64 * std::max(n, nb) + std::min(n, nb);
+                selected.set(key, 1);
+            }
+        } else {
+            vector<std::pair<unsigned char, int>> scored;
+            scored.reserve(adj.size());
+            for (int nb : adj) {
+                uint64_t key = nt64 * std::max(n, nb) + std::min(n, nb);
+                scored.emplace_back(pair_counts.get(key), nb);
+            }
+            std::nth_element(scored.begin(), scored.begin() + k_max, scored.end(),
+                [](auto &a, auto &b) { return a.first > b.first; });
+            for (int i = 0; i < k_max; i++) {
+                int nb = scored[i].second;
+                uint64_t key = nt64 * std::max(n, nb) + std::min(n, nb);
+                selected.set(key, 1);
+            }
         }
     }
+
+    // Release Phase 1 proxy scores (no longer needed)
+    pair_counts = FlatDistMap{};
+
+    // ── Phase 2: Compute get_dist() on selected candidates only ──
+    EdgeList edges;
+    edges.reserve(selected.size());
+
+    for (int n = 0; n < ntrans; n++) {
+        for (int nb : node_adj[n]) {
+            if (nb <= n) continue;  // each pair once: process when n < nb
+            uint64_t key = nt64 * nb + n;
+            if (!selected.contains(key)) continue;
+            float d = c->get_dist(nb, n, softness);
+            if (d > 0.0f) {
+                edges.src.push_back(nb);
+                edges.dst.push_back(n);
+                edges.wt.push_back(static_cast<double>(d));
+            }
+        }
+    }
+
     return edges;
 }
 
@@ -160,66 +251,7 @@ static EdgeList apply_knn(const EdgeList &in, int ntrans, int k) {
 }
 
 
-// ── Count connected components via BFS ──────────────────────────────
-// O(V + E), used by the connectivity-constrained k search.
-
-static int count_components(const EdgeList &edges, int ntrans) {
-    vector<vector<int>> adj(ntrans);
-    for (size_t e = 0; e < edges.size(); e++) {
-        adj[edges.src[e]].push_back(edges.dst[e]);
-        adj[edges.dst[e]].push_back(edges.src[e]);
-    }
-
-    vector<bool> visited(ntrans, false);
-    int components = 0;
-    std::queue<int> q;
-    for (int n = 0; n < ntrans; n++) {
-        if (visited[n]) continue;
-        components++;
-        q.push(n);
-        visited[n] = true;
-        while (!q.empty()) {
-            int cur = q.front();
-            q.pop();
-            for (int nb : adj[cur]) {
-                if (!visited[nb]) {
-                    visited[nb] = true;
-                    q.push(nb);
-                }
-            }
-        }
-    }
-    return components;
-}
-
-
-// ── Find minimum k preserving graph connectivity ────────────────────
-// Binary search in [1, sqrt(n)] for the smallest k where the number
-// of connected components does not exceed target_components.
-
-static int find_optimal_k(const EdgeList &edges, int ntrans,
-                          int target_components) {
-    int lo = 1;
-    int hi = static_cast<int>(std::round(std::sqrt(ntrans)));
-    int best_k = hi;
-
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        EdgeList filtered = apply_knn(edges, ntrans, mid);
-        int comp = count_components(filtered, ntrans);
-
-        if (comp <= target_components) {
-            best_k = mid;
-            hi = mid - 1;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    return best_k;
-}
-
-
-// ── Run Leiden and return membership + community count ───────────────
+// ── Leiden result container ─────────────────────────────────────────
 
 struct LeidenResult {
     vector<int> membership;
@@ -227,8 +259,99 @@ struct LeidenResult {
     double      quality;
 };
 
+
+// ── Compare two partitions via Normalized Mutual Information ────────
+// Wraps igraph_compare_communities().  Returns NMI in [0, 1] where
+// 1 = identical partitions.
+
+static double compute_nmi(const vector<int> &a, const vector<int> &b, int n) {
+    igraph_vector_int_t va, vb;
+    igraph_vector_int_init(&va, n);
+    igraph_vector_int_init(&vb, n);
+    for (int i = 0; i < n; i++) {
+        VECTOR(va)[i] = a[i];
+        VECTOR(vb)[i] = b[i];
+    }
+    igraph_real_t nmi = 0;
+    igraph_compare_communities(&va, &vb, &nmi, IGRAPH_COMMCMP_NMI);
+    igraph_vector_int_destroy(&vb);
+    igraph_vector_int_destroy(&va);
+    return static_cast<double>(nmi);
+}
+
+
+// ── Quality-preserving kNN search ───────────────────────────────────
+// Binary search in [floor, k_max] for the minimum k where:
+//   (1) CPM quality >= QUALITY_THRESHOLD * Q_ref
+//   (2) NMI(partition_knn, partition_ref) >= NMI_THRESHOLD
+// Uses fast Leiden (2 iterations) during search for efficiency.
+// The k floor prevents the degenerate k=1 case that the old
+// connectivity-based search suffered from.
+
+static constexpr double KNN_QUALITY_THRESHOLD = 0.8;
+static constexpr double KNN_NMI_THRESHOLD     = 0.7;
+
+// Forward declaration (defined below).
 static LeidenResult run_leiden(igraph_t *graph, igraph_vector_t *weights,
-                               double resolution, int ntrans) {
+                               double resolution, int ntrans,
+                               int n_iterations);
+
+static int find_optimal_k(const EdgeList &edges, int ntrans,
+                          double resolution,
+                          const LeidenResult &ref_result) {
+    int k_floor = std::max(3, static_cast<int>(std::ceil(std::log2(ntrans + 1))));
+    int k_max   = static_cast<int>(std::ceil(std::sqrt(ntrans)));
+    int lo      = k_floor;
+    int hi      = k_max;
+    int best_k  = k_max;
+
+    double Q_ref = ref_result.quality;
+
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        EdgeList filtered = apply_knn(edges, ntrans, mid);
+
+        igraph_t graph;
+        igraph_vector_t weights;
+        build_igraph(filtered, ntrans, &graph, &weights);
+
+        // Fast Leiden: 2 iterations (not full convergence)
+        LeidenResult knn_result = run_leiden(&graph, &weights,
+                                             resolution, ntrans, 2);
+
+        igraph_vector_destroy(&weights);
+        igraph_destroy(&graph);
+
+        // Quality ratio check
+        double quality_ratio = (std::abs(Q_ref) > 1e-15)
+            ? knn_result.quality / Q_ref : 1.0;
+
+        // NMI structural similarity check
+        double nmi = compute_nmi(ref_result.membership,
+                                 knn_result.membership, ntrans);
+
+        bool ok = (quality_ratio >= KNN_QUALITY_THRESHOLD) &&
+                  (nmi >= KNN_NMI_THRESHOLD);
+
+        if (ok) {
+            best_k = mid;
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+
+    return best_k;
+}
+
+
+// ── Run Leiden and return membership + community count ───────────────
+// n_iterations = -1 for full convergence, or a small positive value
+// (e.g. 2) for a fast approximation during kNN search.
+
+static LeidenResult run_leiden(igraph_t *graph, igraph_vector_t *weights,
+                               double resolution, int ntrans,
+                               int n_iterations = -1) {
     igraph_vector_int_t igraph_membership;
     igraph_vector_int_init(&igraph_membership, ntrans);
     igraph_int_t nb_clusters = 0;
@@ -240,7 +363,7 @@ static LeidenResult run_leiden(igraph_t *graph, igraph_vector_t *weights,
         resolution,
         /* beta= */ 0.01,
         /* start= */ 0,
-        /* n_iterations= */ -1,
+        static_cast<igraph_int_t>(n_iterations),
         &igraph_membership,
         &nb_clusters,
         &quality
@@ -381,7 +504,8 @@ void cluster_leiden(Cluster *c,
         return;
     }
 
-    if (ntrans > 1000) {
+    const bool large = ntrans > 1000;
+    if (large) {
         #pragma omp critical(print)
         cout << "Leiden: super-cluster " << c->get_id()
              << " with " << ntrans << " transcripts" << endl;
@@ -391,50 +515,55 @@ void cluster_leiden(Cluster *c,
     igraph_rng_seed(igraph_rng_default(),
                     static_cast<igraph_uint_t>(c->get_id() + 42));
 
-    // Collect all edges (expensive: calls get_dist for every shared-read pair)
-    EdgeList edges = collect_edges(c, ntrans);
-
-    // ── kNN sparsification ──────────────────────────────────────────
+    double t0 = omp_get_wtime();
     const int knn = Cluster::knn;
+    const double first_resolution = static_cast<double>(thresholds.begin()->first);
+    EdgeList edges;
 
-    if (knn >= 0 && ntrans > 2) {
-        int effective_k;
+    if (knn == 0 && ntrans > 2) {
+        // ── kNN auto: two-phase construction + quality-preserving search ──
+        int k_max = static_cast<int>(std::ceil(std::sqrt(ntrans)));
 
-        if (knn == 0) {
-            // Auto mode: connectivity-constrained minimum k
-            // Step 1: run Leiden on full graph to get target community count
-            igraph_t full_graph;
-            igraph_vector_t full_weights;
-            build_igraph(edges, ntrans, &full_graph, &full_weights);
+        // Two-phase: cheap proxy ranking then get_dist on K_max candidates
+        edges = collect_edges_knn(c, ntrans, k_max);
+        double t1 = omp_get_wtime();
 
-            double first_resolution = static_cast<double>(thresholds.begin()->first);
-            LeidenResult full_result = run_leiden(&full_graph, &full_weights,
-                                                  first_resolution, ntrans);
-            int target_components = full_result.ncommunities;
+        // Reference Leiden run on K_max-sparse graph
+        igraph_t ref_graph;
+        igraph_vector_t ref_weights;
+        build_igraph(edges, ntrans, &ref_graph, &ref_weights);
+        LeidenResult ref_result = run_leiden(&ref_graph, &ref_weights,
+                                             first_resolution, ntrans);
+        igraph_vector_destroy(&ref_weights);
+        igraph_destroy(&ref_graph);
+        double t2 = omp_get_wtime();
 
-            igraph_vector_destroy(&full_weights);
-            igraph_destroy(&full_graph);
+        // Quality-preserving binary search for minimum k
+        int best_k = find_optimal_k(edges, ntrans, first_resolution, ref_result);
+        double t3 = omp_get_wtime();
 
-            // Step 2: binary search for minimum k preserving connectivity
-            effective_k = find_optimal_k(edges, ntrans, target_components);
+        size_t full_edges = edges.size();
+        edges = apply_knn(edges, ntrans, best_k);
 
-            if (ntrans > 1000) {
-                size_t full_edges = edges.size();
-                EdgeList filtered = apply_knn(edges, ntrans, effective_k);
-                #pragma omp critical(print)
-                cout << "  kNN auto: k=" << effective_k
-                     << " (target " << target_components
-                     << " communities, " << full_edges
-                     << " -> " << filtered.size() << " edges)" << endl;
-                edges = std::move(filtered);
-            } else {
-                edges = apply_knn(edges, ntrans, effective_k);
-            }
-        } else {
-            // Fixed k mode
-            effective_k = std::min(knn, ntrans - 1);
-            edges = apply_knn(edges, ntrans, effective_k);
+        if (large) {
+            #pragma omp critical(print)
+            cout << "  kNN auto: k=" << best_k
+                 << " (Q_ref=" << ref_result.quality
+                 << ", " << ref_result.ncommunities << " communities"
+                 << ", " << full_edges << " -> " << edges.size() << " edges)"
+                 << "  [edges=" << (t1 - t0) << "s ref=" << (t2 - t1)
+                 << "s search=" << (t3 - t2) << "s]" << endl;
         }
+
+    } else if (knn > 0 && ntrans > 2) {
+        // ── Fixed k: two-phase with generous K_max, then filter ──
+        int k_max = std::min(2 * knn, ntrans - 1);
+        edges = collect_edges_knn(c, ntrans, k_max);
+        edges = apply_knn(edges, ntrans, std::min(knn, ntrans - 1));
+
+    } else {
+        // ── No kNN: hash-dedup, all edges ──
+        edges = collect_edges(c, ntrans);
     }
 
     // Build igraph from (potentially kNN-filtered) edges
@@ -451,6 +580,13 @@ void cluster_leiden(Cluster *c,
 
     igraph_vector_destroy(&weights);
     igraph_destroy(&graph);
+
+    if (large) {
+        double t_end = omp_get_wtime();
+        #pragma omp critical(print)
+        cout << "  SC " << c->get_id() << " total: " << (t_end - t0)
+             << "s (" << edges.size() << " edges)" << endl;
+    }
 }
 
 #endif // HAVE_IGRAPH

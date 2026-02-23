@@ -5,8 +5,10 @@
 //
 // Features:
 //   - Soft LRT weighting (--lrt-softness): sigmoid decay around D_cut
-//   - Adaptive kNN sparsification (--knn): connectivity-constrained
-//     minimum-k selection per super-cluster
+//   - Adaptive kNN sparsification (--knn): quality-preserving
+//     minimum-k selection per super-cluster (CPM quality + NMI)
+//   - Two-phase edge construction: cheap proxy ranking + get_dist
+//     only on kNN candidates (avoids O(E) distance computation)
 //
 // Author: Martin Paliocha, martin.paliocha@nmbu.no
 // Created 22 February 2026

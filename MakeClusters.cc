@@ -9,6 +9,7 @@
 #include <iostream>
 #include <vector>
 #include <map>
+#include <algorithm>
 #include <omp.h>
 #include <MakeClusters.h>
 
@@ -123,6 +124,17 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
     else if (algo == ClusterAlgorithm::Both) algo_name = "hierarchical + Leiden (comparison)";
     cout << "Starting " << algo_name << " clustering of "
          << n << " super-clusters..." << endl;
+
+    // Sort largest-first so OMP dynamic schedule starts monster clusters
+    // early, preventing a long tail where one thread processes the last
+    // giant super-cluster while all others are idle.
+    // Only for Leiden/Both: hierarchical allocates O(n^2) per-cluster
+    // memory, so launching the 32 largest simultaneously causes swapping.
+    if (algo != ClusterAlgorithm::Hierarchical) {
+        std::ranges::sort(clusterList, [](Cluster *a, Cluster *b) {
+            return a->n_trans() > b->n_trans();
+        });
+    }
 
     int done = 0;
     #pragma omp parallel for schedule(dynamic) shared(done)
