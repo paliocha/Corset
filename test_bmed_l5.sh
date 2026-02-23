@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -J corset-test-BMED-l2
+#SBATCH -J corset-test-BMED-l5
 #SBATCH -p orion
 #SBATCH -c 32
 #SBATCH --mem 131072M
 #SBATCH -t 48:00:00
-#SBATCH -o corset-test-BMED-l2_%j.log
-#SBATCH -e corset-test-BMED-l2_%j.err
+#SBATCH -o corset-test-BMED-l5_%j.log
+#SBATCH -e corset-test-BMED-l5_%j.err
 
 set -euo pipefail
 
@@ -134,17 +134,17 @@ run_corset() {
     echo ""
 }
 
-# ── Test 1: Leiden + kNN auto + -l 2 ──────────────────────────────────
-run_corset "leiden + kNN auto + -l 2" \
+# ── Test 1: Leiden + kNN auto + -l 5 ──────────────────────────────────
+run_corset "leiden + kNN auto + -l 5" \
     --algorithm leiden \
     --knn auto \
-    -l 2 \
-    -p test-leiden-knn-l2
+    -l 5 \
+    -p test-leiden-knn-l5
 
-# ── Test 2: Hierarchical + -l 2 ──────────────────────────────────────
-run_corset "hierarchical + -l 2" \
-    -l 2 \
-    -p test-hier-l2
+# ── Test 2: Hierarchical + -l 5 ──────────────────────────────────────
+run_corset "hierarchical + -l 5" \
+    -l 5 \
+    -p test-hier-l5
 
 # ── Summary ──────────────────────────────────────────────────────────
 echo ""
