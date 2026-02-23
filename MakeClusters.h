@@ -10,7 +10,7 @@
 // and Leiden (--algorithm leiden) back-ends.
 //
 // Original author: Nadia Davidson
-// Last modified 22 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 23 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #pragma once
 
@@ -21,6 +21,14 @@
 #include <Cluster.h>
 #include <Read.h>
 #include <Transcript.h>
+
+// Per-super-cluster timing for the summary report.
+struct SCStats {
+    int id;
+    int ntrans;
+    int nedges;
+    double duration;
+};
 
 class MakeClusters {
     std::vector<Cluster *> clusterList;
@@ -40,8 +48,18 @@ class MakeClusters {
     void processSuperClusters(std::map<float, std::string> &thresholds,
                               std::vector<int> &groups);
 
+    // Summary data (populated during stages, printed at the end)
+    double time_reading_        = 0;
+    double time_superclusters_  = 0;
+    double time_clustering_     = 0;
+    int    total_transcripts_   = 0;
+    std::vector<SCStats> sc_stats_;
+
 public:
     MakeClusters(std::vector<ReadList *> &readLists,
                  std::map<float, std::string> &thresholds,
                  std::vector<int> &groups);
+
+    void set_reading_time(double t) { time_reading_ = t; }
+    void print_summary() const;
 };

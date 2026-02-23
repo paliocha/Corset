@@ -34,6 +34,7 @@
 #include <ranges>
 #include <omp.h>
 #include <FlatDistMap.h>
+#include <Progress.h>
 
 using std::cout;
 using std::endl;
@@ -303,9 +304,12 @@ static LeidenResult run_leiden(igraph_t *graph, igraph_vector_t *weights,
                                double resolution, int ntrans,
                                int n_iterations);
 
+// sc_id >= 0: log each binary search probe (for large SCs).
+// sc_id < 0:  quiet mode.
 static int find_optimal_k(const EdgeList &edges, int ntrans,
                           double resolution,
-                          const LeidenResult &ref_result) {
+                          const LeidenResult &ref_result,
+                          int sc_id = -1) {
     int k_floor = std::max(3, static_cast<int>(std::ceil(std::log2(ntrans + 1))));
     int k_max   = static_cast<int>(std::ceil(std::sqrt(ntrans)));
     int lo      = k_floor;
@@ -341,6 +345,18 @@ static int find_optimal_k(const EdgeList &edges, int ntrans,
                                  knn_result.membership, ntrans);
 
         bool ok = quality_ok && (nmi >= KNN_NMI_THRESHOLD);
+
+        if (sc_id >= 0) {
+            double q_ratio = (std::abs(Q_ref) > 1e-15)
+                ? knn_result.quality / Q_ref : 1.0;
+            char buf[128];
+            std::snprintf(buf, sizeof(buf),
+                          "      probe k=%d: Q=%.2f*Q_ref, NMI=%.2f %s",
+                          mid, q_ratio, nmi,
+                          ok ? "\xe2\x9c\x93" : "\xe2\x9c\x97");
+            #pragma omp critical(print)
+            cout << progress::ansi::dim(buf) << endl;
+        }
 
         if (ok) {
             best_k = mid;
@@ -497,9 +513,9 @@ static void output_leiden(Cluster *c,
 
 // ── Main Leiden entry point ─────────────────────────────────────────
 
-void cluster_leiden(Cluster *c,
-                    map<float, string> &thresholds,
-                    const string &method_tag) {
+int cluster_leiden(Cluster *c,
+                   map<float, string> &thresholds,
+                   const string &method_tag) {
     const int ntrans = c->n_trans();
 
     // Always set up read-group data (needed for get_dist and count output)
@@ -510,14 +526,16 @@ void cluster_leiden(Cluster *c,
             vector<int> membership(ntrans, 0);
             output_leiden(c, label, 1, membership, method_tag);
         }
-        return;
+        return 0;
     }
 
     const bool large = ntrans > 1000;
     if (large) {
         #pragma omp critical(print)
-        cout << "Leiden: super-cluster " << c->get_id()
-             << " with " << ntrans << " transcripts" << endl;
+        cout << progress::ansi::cyan(
+                "  \xe2\x96\xb8 SC " + std::to_string(c->get_id()) + ": "
+                + progress::format_count(ntrans) + " transcripts (Leiden)")
+             << endl;
     }
 
     double t0 = omp_get_wtime();
@@ -548,7 +566,8 @@ void cluster_leiden(Cluster *c,
 
             // Quality-preserving binary search for minimum k
             int best_k = find_optimal_k(edges, ntrans, first_resolution,
-                                        ref_result);
+                                        ref_result,
+                                        large ? c->get_id() : -1);
             double t3 = omp_get_wtime();
 
             size_t full_edges = edges.size();
@@ -556,13 +575,19 @@ void cluster_leiden(Cluster *c,
 
             if (large) {
                 #pragma omp critical(print)
-                cout << "  kNN auto: k=" << best_k
-                     << " (Q_ref=" << ref_result.quality
-                     << ", " << ref_result.ncommunities << " communities"
-                     << ", " << full_edges << " -> " << edges.size()
-                     << " edges)"
-                     << "  [edges=" << (t1 - t0) << "s ref=" << (t2 - t1)
-                     << "s search=" << (t3 - t2) << "s]" << endl;
+                {
+                    cout << "    kNN auto: k=" << best_k
+                         << " (Q_ref=" << ref_result.quality
+                         << ", " << ref_result.ncommunities << " communities"
+                         << ", " << progress::format_count(static_cast<int64_t>(full_edges))
+                         << " -> " << progress::format_count(static_cast<int64_t>(edges.size()))
+                         << " edges)" << endl;
+                    cout << progress::ansi::dim(
+                            "    [edges=" + progress::format_duration(t1 - t0)
+                            + " ref=" + progress::format_duration(t2 - t1)
+                            + " search=" + progress::format_duration(t3 - t2) + "]")
+                         << endl;
+                }
             }
         }
 
@@ -576,6 +601,8 @@ void cluster_leiden(Cluster *c,
         // ── No kNN: hash-dedup, all edges ──
         edges = collect_edges(c, ntrans);
     }
+
+    int nedges = static_cast<int>(edges.size());
 
     // Build igraph from (potentially kNN-filtered) edges
     igraph_t graph;
@@ -595,9 +622,14 @@ void cluster_leiden(Cluster *c,
     if (large) {
         double t_end = omp_get_wtime();
         #pragma omp critical(print)
-        cout << "  SC " << c->get_id() << " total: " << (t_end - t0)
-             << "s (" << edges.size() << " edges)" << endl;
+        cout << progress::ansi::green(
+                "    SC " + std::to_string(c->get_id()) + " done: "
+                + progress::format_duration(t_end - t0) + " ("
+                + progress::format_count(nedges) + " edges)")
+             << endl;
     }
+
+    return nedges;
 }
 
 #endif // HAVE_IGRAPH

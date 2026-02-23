@@ -1,5 +1,5 @@
 VERSION=\"1.10.0\"
-FILES=corset.cc Cluster.cc Transcript.cc MakeClusters.cc Read.cc LeidenCluster.cc MakeClusters.h Transcript.h Read.h StringSet.h Cluster.h LeidenCluster.h corset_fasta_ID_changer.cc
+FILES=corset.cc Cluster.cc Transcript.cc MakeClusters.cc Read.cc LeidenCluster.cc MakeClusters.h Transcript.h Read.h StringSet.h Cluster.h LeidenCluster.h Progress.h FlatDistMap.h corset_fasta_ID_changer.cc
 OBJ=corset.o Cluster.o MakeClusters.o Transcript.o Read.o @IGRAPH_OBJ@
 EX=corset corset_fasta_ID_changer
 

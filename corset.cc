@@ -14,7 +14,7 @@
  **
  ** Original author: Nadia Davidson
  ** OpenMP/htslib port: Martin Paliocha, 2026
- ** Last modified 22 February 2026, martin.paliocha@nmbu.no
+ ** Last modified 23 February 2026, martin.paliocha@nmbu.no
  **/
 
 #include <iostream>
@@ -34,6 +34,7 @@
 #include <htslib/sam.h>
 
 #include <MakeClusters.h>
+#include <Progress.h>
 #include <Read.h>
 #include <Transcript.h>
 
@@ -59,7 +60,9 @@ ReadList *read_bam_file(string all_file_names, TranscriptList *trans, int sample
     stringstream ss(all_file_names);
 
     while (getline(ss, filename, ',')) {
-        cout << "Reading bam file : " << filename << endl;
+        cout << "  " << progress::ansi::cyan("[Sample " + std::to_string(sample + 1)
+             + "/" + std::to_string(Transcript::samples) + "]")
+             << " " << filename << endl;
         if (filename.contains(corset_extension)) {
             cout << "The input files look like corset read files (filenames with "
                  << corset_extension << "). Perhaps you meant to run with the -i corset option?" << endl;
@@ -78,25 +81,28 @@ ReadList *read_bam_file(string all_file_names, TranscriptList *trans, int sample
             exit(1);
         }
         bam1_t *b = bam_init1();
-        int i = 0;
 
         // Register all reference sequences from the header
         for (int tid = 0; tid < hdr->n_targets; tid++)
             trans->insert(sam_hdr_tid2name(hdr, tid));
+
+        progress::ProgressLine aln_progress(
+            "Sample " + std::to_string(sample + 1) + "/" + std::to_string(Transcript::samples));
+        int64_t aln_count = 0;
 
         while (sam_read1(in, hdr, b) >= 0) {
             string read_name(bam_get_qname(b));
             int tid = b->core.tid;
             if (tid != -1)  // unmapped reads have tid=-1
                 rList->add_alignment(read_name, string(sam_hdr_tid2name(hdr, tid)), sample);
-            if (i % 200000 == 0)
-                cout << static_cast<float>(i) / 1e6f << " million alignments read" << endl;
-            i++;
+            aln_count++;
+            aln_progress.update(aln_count);
         }
+        aln_progress.finish();
+
         bam_destroy1(b);
         sam_hdr_destroy(hdr);
         sam_close(in);
-        cout << "Done reading " << filename << endl;
     }
     rList->compactify_reads(trans);
     return rList;
@@ -110,7 +116,9 @@ ReadList *read_fasta_file(string all_file_names, TranscriptList *trans, int samp
     stringstream ss(all_file_names);
 
     while (getline(ss, filename, ',')) {
-        cout << "Reading fasta file : " << filename << endl;
+        cout << "  " << progress::ansi::cyan("[Sample " + std::to_string(sample + 1)
+             + "/" + std::to_string(Transcript::samples) + "]")
+             << " " << filename << endl;
 
         ifstream file(filename);
         if (!file.good()) {
@@ -130,19 +138,21 @@ ReadList *read_fasta_file(string all_file_names, TranscriptList *trans, int samp
             }
         }
 
-        cout << "Done reading file, getting k-mers" << endl;
         const int k = 70;
-        int t_count = 1;
+        progress::ProgressLine contig_progress(
+            "Sample " + std::to_string(sample + 1) + "/" + std::to_string(Transcript::samples),
+            static_cast<int64_t>(sequences.size()));
+        int64_t t_count = 0;
+
         for (auto &kv : sequences) {
-            if (t_count % 1000 == 0)
-                cout << static_cast<float>(t_count) / 1e3f << " thousand contigs read" << endl;
             trans->insert(kv.first);
             const string &seq = kv.second;
             for (size_t i = 0; i + k <= seq.length(); i++)
                 rList->add_alignment(seq.substr(i, k), kv.first, sample);
             t_count++;
+            contig_progress.update(t_count);
         }
-        cout << "Done reading " << filename << endl;
+        contig_progress.finish();
     }
     rList->compactify_reads(trans);
     return rList;
@@ -230,7 +240,9 @@ ReadList *read_salmon_eq_classes_file(string all_file_names, TranscriptList *tra
     stringstream ss(all_file_names);
 
     while (getline(ss, filename, ',')) {
-        cout << "Reading salmon eq_classes file : " << filename << endl;
+        cout << "  " << progress::ansi::cyan("[Sample " + std::to_string(sample + 1)
+             + "/" + std::to_string(Transcript::samples) + "]")
+             << " " << filename << endl;
 
         ifstream file(filename);
         string line;
@@ -242,8 +254,8 @@ ReadList *read_salmon_eq_classes_file(string all_file_names, TranscriptList *tra
         int ntranscripts = std::stoi(line);
         getline(file, line);
         int neqclasses = std::stoi(line);
-        cout << "Reading data on " << ntranscripts << " transcripts in "
-             << neqclasses << " equivalence classes" << endl;
+        cout << "    " << progress::format_count(ntranscripts) << " transcripts, "
+             << progress::format_count(neqclasses) << " equivalence classes" << endl;
 
         // Pre-resolve all transcript names to Transcript* pointers once
         vector<Transcript *> trans_ptrs(ntranscripts);
@@ -253,6 +265,10 @@ ReadList *read_salmon_eq_classes_file(string all_file_names, TranscriptList *tra
         }
 
         // Process equivalence classes
+        progress::ProgressLine eq_progress(
+            "Sample " + std::to_string(sample + 1) + "/" + std::to_string(Transcript::samples),
+            static_cast<int64_t>(neqclasses));
+
         for (int ne = 0; ne < neqclasses; ne++) {
             getline(file, line);
             istringstream istream(line);
@@ -285,10 +301,14 @@ ReadList *read_salmon_eq_classes_file(string all_file_names, TranscriptList *tra
             } else {
                 reads_filtered += weight;
             }
+
+            eq_progress.update(ne + 1);
         }
-        cout << reads_counted << " reads counted, "
-             << reads_filtered << " reads filtered, "
-             << reads_redistributed << " reads redistributed." << endl;
+        eq_progress.finish();
+
+        cout << "    " << progress::format_count(reads_counted) << " counted, "
+             << progress::format_count(reads_filtered) << " filtered, "
+             << progress::format_count(reads_redistributed) << " redistributed" << endl;
     }
     return rList;
 }
@@ -333,7 +353,7 @@ void print_usage() {
          << "  --lrt-softness <float>  Sigmoid steepness for soft LRT (Leiden only). Default: 0 (hard cutoff).\n"
          << "                    Recommended starting point: 2.0 for gentle sigmoid decay.\n"
          << "  --knn <int|auto>  kNN graph sparsification (Leiden only). Default: disabled.\n"
-         << "                    'auto' = connectivity-constrained adaptive k per super-cluster.\n"
+         << "                    'auto' = quality-preserving adaptive k per super-cluster.\n"
          << "                    <int> = fixed global k for all super-clusters.\n"
          << "  -v, --version     Print version and exit.\n"
          << "  -h, --help        Print this help message and exit.\n"
@@ -416,15 +436,14 @@ int main(int argc, char **argv) {
         argc = dst;
     }
 
-    cout << "\nRunning Corset Version " << VERSION << endl;
-    cout << "Using " << omp_get_max_threads()
-         << " threads (set OMP_NUM_THREADS or use -t to override)" << endl;
+    cout << "\n" << progress::ansi::bold("Corset " + string(VERSION)) << endl;
+    cout << "  Threads:    " << omp_get_max_threads() << endl;
     if (Cluster::algorithm == ClusterAlgorithm::Both)
-        cout << "Algorithm: both (hierarchical + Leiden comparison)" << endl;
+        cout << "  Algorithm:  both (hierarchical + Leiden)" << endl;
     else if (Cluster::algorithm == ClusterAlgorithm::Leiden)
-        cout << "Algorithm: Leiden (CPM, resolution from -d thresholds)" << endl;
+        cout << "  Algorithm:  Leiden (CPM)" << endl;
     else
-        cout << "Algorithm: hierarchical" << endl;
+        cout << "  Algorithm:  hierarchical" << endl;
 
     // Warn if Leiden-only flags used with hierarchical-only mode
     if (Cluster::algorithm == ClusterAlgorithm::Hierarchical) {
@@ -439,11 +458,11 @@ int main(int argc, char **argv) {
     }
 
     if (Cluster::lrt_softness > 0.0f)
-        cout << "LRT softness: " << Cluster::lrt_softness << " (sigmoid decay)" << endl;
+        cout << "  LRT softness: " << Cluster::lrt_softness << " (sigmoid decay)" << endl;
     if (Cluster::knn == 0)
-        cout << "kNN: auto (connectivity-constrained per super-cluster)" << endl;
+        cout << "  kNN: auto (quality-preserving per super-cluster)" << endl;
     else if (Cluster::knn > 0)
-        cout << "kNN: " << Cluster::knn << " (fixed)" << endl;
+        cout << "  kNN: " << Cluster::knn << " (fixed)" << endl;
 
     // Allow two levels of parallelism: outer (super-clusters) + inner (merge)
     omp_set_max_active_levels(2);
@@ -638,9 +657,8 @@ int main(int argc, char **argv) {
     // Default D_cut based on degrees of freedom
     if (Cluster::D_cut == 0) {
         Cluster::D_cut = 17.5f + 2.5f * (Transcript::groups - 1);
-        cout << "D threshold not provided; using D = "
-             << Cluster::D_cut << " (groups = "
-             << Transcript::groups << ")" << endl;
+        cout << "  D threshold:  " << Cluster::D_cut
+             << " (default for " << Transcript::groups << " groups)" << endl;
     }
 
     // Determine method tags for output files
@@ -683,6 +701,9 @@ int main(int argc, char **argv) {
     TranscriptList *tList = new TranscriptList;
     vector<ReadList *> rList;
 
+    progress::print_banner("Reading input files (" + std::to_string(smpls) + " samples)");
+    double t_read_start = omp_get_wtime();
+
     for (int f = 0; f < smpls; f++) {
         rList.push_back(read_input(string(argv[optind + f]), tList, f));
         if (output_reads) {
@@ -692,7 +713,11 @@ int main(int argc, char **argv) {
         }
     }
 
-    cout << "Done reading all files." << endl;
+    double reading_time = omp_get_wtime() - t_read_start;
+    cout << progress::ansi::green(
+            "  All " + std::to_string(smpls) + " samples read in "
+            + progress::format_duration(reading_time))
+         << endl;
     if (stop_after_read) exit(0);
 
     // Handle transcripts below minimum counts
@@ -718,9 +743,9 @@ int main(int argc, char **argv) {
 
     delete tList;
 
-    cout << "Start to cluster the reads" << endl;
     MakeClusters cList(rList, distance_thresholds, groups);
-    cout << "Finished" << endl;
+    cList.set_reading_time(reading_time);
+    cList.print_summary();
 
     return 0;
 }

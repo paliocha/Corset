@@ -4,9 +4,10 @@
 // publications where you made use of it for any part of the data
 // analysis.
 //
-// Last modified 22 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 23 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #include <Cluster.h>
+#include <Progress.h>
 #include <cmath>
 #include <iostream>
 #include <sstream>
@@ -324,7 +325,10 @@ void Cluster::cluster(map<float, string> &thresholds,
                       const string &method_tag) {
     if (n_trans() > 1000) {
         #pragma omp critical(print)
-        cout << "cluster with " << n_trans() << " transcripts.. this might take a while" << endl;
+        cout << progress::ansi::cyan(
+                "  \xe2\x96\xb8 SC " + std::to_string(get_id()) + ": "
+                + progress::format_count(n_trans()) + " transcripts (hierarchical)")
+             << endl;
     }
 
     initialise_matrix();
@@ -334,9 +338,12 @@ void Cluster::cluster(map<float, string> &thresholds,
         int i = 0, j = 0;
         float distance = 1.0f - static_cast<float>(find_next_pair(i, j)) / UCHAR_MAX;
 
-        if (n > 1000 && n % 200 == 0) {
+        if (n > 5000 && n % 1000 == 0) {
+            char buf[80];
+            std::snprintf(buf, sizeof(buf), "    SC %d: %d -> %d clusters (dist=%.2f)",
+                          get_id(), n_trans(), n, distance);
             #pragma omp critical(print)
-            cout << "down to " << n << " clusters. dist=" << distance << endl;
+            cout << progress::ansi::dim(buf) << endl;
         }
 
         while (itr_d != thresholds.end() && distance > itr_d->first) {
