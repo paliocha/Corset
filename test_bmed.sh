@@ -138,29 +138,11 @@ run_corset() {
 run_corset "hierarchical (baseline)" \
     -p test-hier
 
-# ── Test 2: Leiden baseline (no kNN, no soft LRT) ───────────────────
-run_corset "leiden (baseline)" \
-    --algorithm leiden \
-    -p test-leiden
-
-# ── Test 3: Leiden + soft LRT ────────────────────────────────────────
-run_corset "leiden + soft LRT (softness=2.0)" \
-    --algorithm leiden \
-    --lrt-softness 2.0 \
-    -p test-leiden-soft
-
-# ── Test 4: Leiden + kNN auto ────────────────────────────────────────
+# ── Test 2: Leiden + kNN auto ────────────────────────────────────────
 run_corset "leiden + kNN auto" \
     --algorithm leiden \
     --knn auto \
     -p test-leiden-knn
-
-# ── Test 5: Both + all features ──────────────────────────────────────
-run_corset "both + soft LRT + kNN auto" \
-    --algorithm both \
-    --lrt-softness 2.0 \
-    --knn auto \
-    -p test-both
 
 # ── Summary ──────────────────────────────────────────────────────────
 echo ""
