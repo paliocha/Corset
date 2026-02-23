@@ -79,14 +79,15 @@ From: ubuntu:24.04
     Corset fork with OpenMP parallelism and optional Leiden clustering.
     Ported from legacy samtools 0.x API to htslib 1.23.
 
-    New options:
-      -t <int>              Threads (default: OMP_NUM_THREADS)
-      --algorithm <str>     hierarchical (default) or leiden
-                            Leiden uses -d thresholds as CPM resolution
-      --version, -v         Print version and exit
-      --help, -h            Print usage and exit
+    Options:
+      -t <int>                 Threads (default: OMP_NUM_THREADS)
+      --algorithm <str>        hierarchical (default), leiden, or both
+      --lrt-softness <float>   Sigmoid LRT decay (Leiden only, default: 0)
+      --knn <int|auto>         kNN graph sparsification (Leiden only)
+      --version, -v            Print version and exit
+      --help, -h               Print usage and exit
 
-    Usage:  corset --algorithm leiden -d 0.3 \
-                  -t 16 -i salmon_eq_classes \
+    Usage:  corset --algorithm leiden --knn auto \
+                  -d 0.3 -t 16 -i salmon_eq_classes \
                   -g group1,group1,group2,group2 \
                   -p my_prefix eq_class_1.sf eq_class_2.sf ...

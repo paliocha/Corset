@@ -7,3 +7,10 @@ Makefile
 config.log
 config.status
 autom4te.cache/
+test_output/
+corset-compare*
+corest-test*
+compare-results*
+compare_results*
+*.err
+*.log
