@@ -38,12 +38,12 @@
 
 using std::cout;
 using std::endl;
-using std::string;
-using std::vector;
+using std::ios_base;
 using std::map;
 using std::ofstream;
 using std::ostringstream;
-using std::ios_base;
+using std::string;
+using std::vector;
 
 
 // ── Edge list: raw edges before igraph construction ─────────────────
@@ -466,7 +466,8 @@ static void output_leiden(Cluster *c,
                           const string &threshold,
                           int ncommunities,
                           const vector<int> &membership,
-                          const string &method_tag) {
+                          const string &method_tag,
+                          map<string, string> *file_buf = nullptr) {
     const int ntrans = c->n_trans();
 
     // Compute counts per community per sample
@@ -500,21 +501,25 @@ static void output_leiden(Cluster *c,
                     << Cluster::cluster_id_joiner << membership[t] << "\n";
     }
 
-    // Write atomically under critical section
-    #pragma omp critical(file_io)
-    {
-        string counts_fn  = Cluster::file_prefix + method_tag
-                          + string(Cluster::file_counts)
-                          + threshold + string(Cluster::file_ext);
-        string cluster_fn = Cluster::file_prefix + method_tag
-                          + string(Cluster::file_clusters)
-                          + threshold + string(Cluster::file_ext);
+    string counts_fn  = Cluster::file_prefix + method_tag
+                      + string(Cluster::file_counts)
+                      + threshold + string(Cluster::file_ext);
+    string cluster_fn = Cluster::file_prefix + method_tag
+                      + string(Cluster::file_clusters)
+                      + threshold + string(Cluster::file_ext);
 
-        ofstream countsFile(counts_fn, ios_base::app);
-        countsFile << counts_buf.str();
+    if (file_buf) {
+        (*file_buf)[counts_fn] += counts_buf.str();
+        (*file_buf)[cluster_fn] += cluster_buf.str();
+    } else {
+        #pragma omp critical(file_io)
+        {
+            ofstream countsFile(counts_fn, ios_base::app);
+            countsFile << counts_buf.str();
 
-        ofstream clusterFile(cluster_fn, ios_base::app);
-        clusterFile << cluster_buf.str();
+            ofstream clusterFile(cluster_fn, ios_base::app);
+            clusterFile << cluster_buf.str();
+        }
     }
 }
 
@@ -524,7 +529,8 @@ static void output_leiden(Cluster *c,
 int cluster_leiden(Cluster *c,
                    map<float, string> &thresholds,
                    const string &method_tag,
-                   vector<int> *cluster_sizes) {
+                   vector<int> *cluster_sizes,
+                   map<string, string> *file_buf) {
     const int ntrans = c->n_trans();
 
     // Always set up read-group data (needed for get_dist and count output)
@@ -533,7 +539,7 @@ int cluster_leiden(Cluster *c,
     if (ntrans <= 1) {
         for (auto &[thr, label] : thresholds) {
             vector<int> membership(ntrans, 0);
-            output_leiden(c, label, 1, membership, method_tag);
+            output_leiden(c, label, 1, membership, method_tag, file_buf);
         }
         if (cluster_sizes && ntrans > 0)
             cluster_sizes->assign(1, ntrans);
@@ -624,7 +630,7 @@ int cluster_leiden(Cluster *c,
     for (auto &[thr, label] : thresholds) {
         double resolution = static_cast<double>(thr);
         LeidenResult result = run_leiden(&graph, &weights, resolution, ntrans);
-        output_leiden(c, label, result.ncommunities, result.membership, method_tag);
+        output_leiden(c, label, result.ncommunities, result.membership, method_tag, file_buf);
 
         // Capture cluster sizes from the last threshold
         if (cluster_sizes) {

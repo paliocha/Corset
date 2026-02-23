@@ -20,13 +20,13 @@
 
 using std::cout;
 using std::endl;
-using std::string;
-using std::vector;
+using std::ios_base;
 using std::map;
 using std::min;
 using std::ofstream;
 using std::ostringstream;
-using std::ios_base;
+using std::string;
+using std::vector;
 
 
 // ── Distance between two transcript clusters ────────────────────────
@@ -332,7 +332,8 @@ vector<int> Cluster::get_counts(int s) {
 // ── Main clustering loop ────────────────────────────────────────────
 
 void Cluster::cluster(map<float, string> &thresholds,
-                      const string &method_tag) {
+                      const string &method_tag,
+                      map<string, string> *file_buf) {
     if (n_trans() > 1000) {
         #pragma omp critical(print)
         cout << progress::ansi::cyan(
@@ -357,7 +358,7 @@ void Cluster::cluster(map<float, string> &thresholds,
         }
 
         while (itr_d != thresholds.end() && distance > itr_d->first) {
-            output_clusters(itr_d->second, method_tag);
+            output_clusters(itr_d->second, method_tag, file_buf);
             itr_d++;
         }
         if (itr_d == thresholds.end() || distance == 1.0f) break;
@@ -367,7 +368,7 @@ void Cluster::cluster(map<float, string> &thresholds,
 
     // Report final clustering for any remaining thresholds
     while (itr_d != thresholds.end()) {
-        output_clusters(itr_d->second, method_tag);
+        output_clusters(itr_d->second, method_tag, file_buf);
         itr_d++;
     }
 }
@@ -376,7 +377,8 @@ void Cluster::cluster(map<float, string> &thresholds,
 // ── Output cluster assignments and counts ───────────────────────────
 
 void Cluster::output_clusters(const string &threshold,
-                              const string &method_tag) {
+                              const string &method_tag,
+                              map<string, string> *file_buf) {
     // Compute counts for all samples
     vector<vector<int>> counts;
     counts.reserve(Transcript::samples);
@@ -408,17 +410,21 @@ void Cluster::output_clusters(const string &threshold,
         if (!groups[g].empty()) id++;
     }
 
-    // Write atomically under critical section (RAII handles close on scope exit)
-    #pragma omp critical(file_io)
-    {
-        string counts_fn  = file_prefix + method_tag + string(file_counts) + threshold + string(file_ext);
-        string cluster_fn = file_prefix + method_tag + string(file_clusters) + threshold + string(file_ext);
+    string counts_fn  = file_prefix + method_tag + string(file_counts) + threshold + string(file_ext);
+    string cluster_fn = file_prefix + method_tag + string(file_clusters) + threshold + string(file_ext);
 
-        ofstream countsFile(counts_fn, ios_base::app);
-        countsFile << counts_buf.str();
+    if (file_buf) {
+        (*file_buf)[counts_fn] += counts_buf.str();
+        (*file_buf)[cluster_fn] += cluster_buf.str();
+    } else {
+        #pragma omp critical(file_io)
+        {
+            ofstream countsFile(counts_fn, ios_base::app);
+            countsFile << counts_buf.str();
 
-        ofstream clusterFile(cluster_fn, ios_base::app);
-        clusterFile << cluster_buf.str();
+            ofstream clusterFile(cluster_fn, ios_base::app);
+            clusterFile << cluster_buf.str();
+        }
     }
 }
 

@@ -11,7 +11,7 @@
 //     only on kNN candidates (avoids O(E) distance computation)
 //
 // Author: Martin Paliocha, martin.paliocha@nmbu.no
-// Created 22 February 2026
+// Created 22 February 2026, last modified 23 February 2026
 
 #pragma once
 
@@ -33,6 +33,7 @@ class Cluster;
 int cluster_leiden(Cluster *c,
                    std::map<float, std::string> &thresholds,
                    const std::string &method_tag = "",
-                   std::vector<int> *cluster_sizes = nullptr);
+                   std::vector<int> *cluster_sizes = nullptr,
+                   std::map<std::string, std::string> *file_buf = nullptr);
 
 #endif // HAVE_IGRAPH

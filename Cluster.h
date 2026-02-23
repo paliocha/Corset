@@ -19,7 +19,7 @@
 //    igraph's CPM implementation.  See LeidenCluster.cc.
 //
 // Original author: Nadia Davidson
-// Last modified 22 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
+// Last modified 23 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #pragma once
 
@@ -99,7 +99,8 @@ class Cluster {
     void          initialise_matrix();
     std::vector<int> get_counts(int s);
     void          output_clusters(const std::string &threshold,
-                                  const std::string &method_tag = "");
+                                  const std::string &method_tag = "",
+                                  std::map<std::string, std::string> *file_buf = nullptr);
 
 public:
     // --- Accessors ---
@@ -134,7 +135,8 @@ public:
 
     // Main entry point: hierarchical clustering with expression testing.
     void cluster(std::map<float, std::string> &thresholds,
-                 const std::string &method_tag = "");
+                 const std::string &method_tag = "",
+                 std::map<std::string, std::string> *file_buf = nullptr);
 
     // --- Static configuration ---
     static inline ClusterAlgorithm algorithm = ClusterAlgorithm::Hierarchical;

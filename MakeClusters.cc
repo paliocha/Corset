@@ -7,6 +7,7 @@
 // Last modified 23 February 2026, Martin Paliocha, martin.paliocha@nmbu.no
 
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <map>
 #include <algorithm>
@@ -21,6 +22,7 @@
 using std::cout;
 using std::endl;
 using std::map;
+using std::ofstream;
 using std::string;
 using std::vector;
 
@@ -179,6 +181,11 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
     vector<vector<SCStats>> tl_stats(max_threads);
     vector<vector<int>> tl_csizes(max_threads);
 
+    // Thread-local file buffers: filename → accumulated content.
+    // Replaces 750K+ NFS open-append-close operations with 2-4 writes.
+    using FileBuffer = map<string, string>;
+    vector<FileBuffer> tl_files(max_threads);
+
     #pragma omp parallel for schedule(dynamic) shared(done, last_progress_time)
     for (int i = 0; i < n; i++) {
         double sc_start = omp_get_wtime();
@@ -189,25 +196,25 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
 
         int nedges = 0;
         vector<int> sizes;
+        int tid = omp_get_thread_num();
 
 #ifdef HAVE_IGRAPH
         if (algo == ClusterAlgorithm::Both) {
             // Leiden first (reads cluster data without mutation)
-            nedges = cluster_leiden(c, thresholds, "l-", &sizes);
+            nedges = cluster_leiden(c, thresholds, "l-", &sizes, &tl_files[tid]);
             // Hierarchical second (mutates via merges — must go last)
-            c->cluster(thresholds, "h-");
+            c->cluster(thresholds, "h-", &tl_files[tid]);
         } else if (algo == ClusterAlgorithm::Leiden) {
-            nedges = cluster_leiden(c, thresholds, "", &sizes);
+            nedges = cluster_leiden(c, thresholds, "", &sizes, &tl_files[tid]);
         } else
 #endif
         {
-            c->cluster(thresholds);
+            c->cluster(thresholds, "", &tl_files[tid]);
             for (const auto &g : c->get_groups())
                 if (!g.empty()) sizes.push_back(static_cast<int>(g.size()));
         }
 
         double sc_duration = omp_get_wtime() - sc_start;
-        int tid = omp_get_thread_num();
         tl_stats[tid].push_back({i, ntrans, nedges,
                                  static_cast<int>(sizes.size()), sc_duration});
         auto &cs = tl_csizes[tid];
@@ -259,6 +266,18 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
         sc_stats_.insert(sc_stats_.end(), tv.begin(), tv.end());
     for (auto &tv : tl_csizes)
         cluster_sizes_.insert(cluster_sizes_.end(), tv.begin(), tv.end());
+
+    // Merge thread-local file buffers and write to disk in one pass
+    {
+        FileBuffer merged;
+        for (auto &fb : tl_files)
+            for (auto &[fn, content] : fb)
+                merged[fn] += std::move(content);
+        for (auto &[fn, content] : merged) {
+            ofstream f(fn);
+            f << content;
+        }
+    }
 
     time_clustering_ = omp_get_wtime() - t_start;
     clusterList.clear();
