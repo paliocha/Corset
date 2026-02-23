@@ -177,6 +177,7 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
     // Thread-local SC stats (one vector per thread, merged after loop)
     int max_threads = omp_get_max_threads();
     vector<vector<SCStats>> tl_stats(max_threads);
+    vector<vector<int>> tl_csizes(max_threads);
 
     #pragma omp parallel for schedule(dynamic) shared(done, last_progress_time)
     for (int i = 0; i < n; i++) {
@@ -187,24 +188,30 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
         c->set_sample_groups(groups);
 
         int nedges = 0;
+        vector<int> sizes;
 
 #ifdef HAVE_IGRAPH
         if (algo == ClusterAlgorithm::Both) {
             // Leiden first (reads cluster data without mutation)
-            nedges = cluster_leiden(c, thresholds, "l-");
+            nedges = cluster_leiden(c, thresholds, "l-", &sizes);
             // Hierarchical second (mutates via merges — must go last)
             c->cluster(thresholds, "h-");
         } else if (algo == ClusterAlgorithm::Leiden) {
-            nedges = cluster_leiden(c, thresholds);
+            nedges = cluster_leiden(c, thresholds, "", &sizes);
         } else
 #endif
         {
             c->cluster(thresholds);
+            for (const auto &g : c->get_groups())
+                if (!g.empty()) sizes.push_back(static_cast<int>(g.size()));
         }
 
         double sc_duration = omp_get_wtime() - sc_start;
         int tid = omp_get_thread_num();
-        tl_stats[tid].push_back({i, ntrans, nedges, sc_duration});
+        tl_stats[tid].push_back({i, ntrans, nedges,
+                                 static_cast<int>(sizes.size()), sc_duration});
+        auto &cs = tl_csizes[tid];
+        cs.insert(cs.end(), sizes.begin(), sizes.end());
 
         delete c;
 
@@ -250,6 +257,8 @@ void MakeClusters::processSuperClusters(map<float, string> &thresholds,
     // Merge thread-local stats
     for (auto &tv : tl_stats)
         sc_stats_.insert(sc_stats_.end(), tv.begin(), tv.end());
+    for (auto &tv : tl_csizes)
+        cluster_sizes_.insert(cluster_sizes_.end(), tv.begin(), tv.end());
 
     time_clustering_ = omp_get_wtime() - t_start;
     clusterList.clear();
@@ -304,10 +313,14 @@ void MakeClusters::print_summary() const {
 
     double total = time_reading_ + time_superclusters_ + time_clustering_;
 
+    int64_t total_clusters = static_cast<int64_t>(cluster_sizes_.size());
+
     std::printf("  Transcripts:     %s\n",
                 format_count(total_transcripts_).c_str());
     std::printf("  Super-clusters:  %s\n",
                 format_count(static_cast<int64_t>(sc_stats_.size())).c_str());
+    std::printf("  Output clusters: %s\n",
+                format_count(total_clusters).c_str());
     std::printf("  Algorithm:       %s\n\n", algo_desc.c_str());
 
     std::printf("  Stage timing:\n");
@@ -318,6 +331,41 @@ void MakeClusters::print_summary() const {
     std::printf("    Clustering:              %s\n",
                 format_duration(time_clustering_).c_str());
     std::printf("    Total:                   %s\n", format_duration(total).c_str());
+
+    // ── Output cluster size distribution ──
+    if (total_clusters > 0) {
+        int64_t n_single = 0, n_small = 0, n_med = 0, n_large = 0, n_xl = 0;
+        int max_size = 0;
+        for (int sz : cluster_sizes_) {
+            if (sz == 1) n_single++;
+            else if (sz <= 10) n_small++;
+            else if (sz <= 100) n_med++;
+            else if (sz <= 1000) n_large++;
+            else n_xl++;
+            if (sz > max_size) max_size = sz;
+        }
+        auto sorted_sizes = cluster_sizes_;
+        std::ranges::sort(sorted_sizes);
+        int median_size = sorted_sizes[sorted_sizes.size() / 2];
+
+        std::printf("\n  Output cluster size distribution:\n");
+        std::printf("    %-14s %9s %7s\n", "Size", "Count", "");
+
+        auto print_bucket = [&](const char *label, int64_t count) {
+            if (count == 0) return;
+            double pct = 100.0 * count / total_clusters;
+            std::printf("    %-14s %9s %6.1f%%\n",
+                        label, format_count(count).c_str(), pct);
+        };
+        print_bucket("Singletons", n_single);
+        print_bucket("2-10", n_small);
+        print_bucket("11-100", n_med);
+        print_bucket("101-1K", n_large);
+        print_bucket(">1K", n_xl);
+
+        std::printf("    Median: %d   Largest: %s transcripts\n",
+                    median_size, format_count(max_size).c_str());
+    }
 
     if (sc_stats_.empty()) {
         std::printf("\n");

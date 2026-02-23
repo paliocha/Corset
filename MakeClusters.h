@@ -27,6 +27,7 @@ struct SCStats {
     int id;
     int ntrans;
     int nedges;
+    int nclusters;
     double duration;
 };
 
@@ -55,6 +56,7 @@ class MakeClusters {
     double time_clustering_     = 0;
     int    total_transcripts_   = 0;
     std::vector<SCStats> sc_stats_;
+    std::vector<int> cluster_sizes_;  // per-output-cluster transcript counts
 
 public:
     MakeClusters(std::vector<ReadList *> &readLists,

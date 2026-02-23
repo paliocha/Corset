@@ -19,6 +19,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 class Cluster;
 
@@ -26,9 +27,12 @@ class Cluster;
 // Called from MakeClusters::processSuperClusters() in place of
 // Cluster::cluster() when --algorithm leiden or both is selected.
 // method_tag: "" for standalone, "l-" for comparison mode.
+// cluster_sizes: if non-null, filled with per-community transcript counts
+//                from the last threshold (for summary statistics).
 // Returns the number of edges in the (possibly kNN-filtered) graph.
 int cluster_leiden(Cluster *c,
                    std::map<float, std::string> &thresholds,
-                   const std::string &method_tag = "");
+                   const std::string &method_tag = "",
+                   std::vector<int> *cluster_sizes = nullptr);
 
 #endif // HAVE_IGRAPH

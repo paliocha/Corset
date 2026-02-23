@@ -523,7 +523,8 @@ static void output_leiden(Cluster *c,
 
 int cluster_leiden(Cluster *c,
                    map<float, string> &thresholds,
-                   const string &method_tag) {
+                   const string &method_tag,
+                   vector<int> *cluster_sizes) {
     const int ntrans = c->n_trans();
 
     // Always set up read-group data (needed for get_dist and count output)
@@ -534,6 +535,8 @@ int cluster_leiden(Cluster *c,
             vector<int> membership(ntrans, 0);
             output_leiden(c, label, 1, membership, method_tag);
         }
+        if (cluster_sizes && ntrans > 0)
+            cluster_sizes->assign(1, ntrans);
         return 0;
     }
 
@@ -622,6 +625,13 @@ int cluster_leiden(Cluster *c,
         double resolution = static_cast<double>(thr);
         LeidenResult result = run_leiden(&graph, &weights, resolution, ntrans);
         output_leiden(c, label, result.ncommunities, result.membership, method_tag);
+
+        // Capture cluster sizes from the last threshold
+        if (cluster_sizes) {
+            cluster_sizes->assign(result.ncommunities, 0);
+            for (int m : result.membership)
+                (*cluster_sizes)[m]++;
+        }
     }
 
     igraph_vector_destroy(&weights);
