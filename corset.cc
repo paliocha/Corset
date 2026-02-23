@@ -352,7 +352,8 @@ void print_usage() {
          << "                    'both' outputs h- and l- prefixed files for comparison.\n"
          << "  --lrt-softness <float>  Sigmoid steepness for soft LRT (Leiden only). Default: 0 (hard cutoff).\n"
          << "                    Recommended starting point: 2.0 for gentle sigmoid decay.\n"
-         << "  --knn <int|auto>  kNN graph sparsification (Leiden only). Default: disabled.\n"
+         << "  --knn <int|auto>  kNN graph sparsification (Leiden only). Default: auto.\n"
+         << "  --no-knn          Disable kNN sparsification (use full edge graph).\n"
          << "                    'auto' = quality-preserving adaptive k per super-cluster.\n"
          << "                    <int> = fixed global k for all super-clusters.\n"
          << "  -v, --version     Print version and exit.\n"
@@ -427,6 +428,11 @@ int main(int argc, char **argv) {
             argv[i] = nullptr; argv[++i] = nullptr;
             continue;
         }
+        if (arg == "--no-knn") {
+            Cluster::knn = -1;
+            argv[i] = nullptr;
+            continue;
+        }
     }
     // Compact argv: remove consumed long options
     {
@@ -451,10 +457,7 @@ int main(int argc, char **argv) {
             cerr << "WARNING: --lrt-softness ignored (only applies to Leiden)" << endl;
             Cluster::lrt_softness = 0.0f;
         }
-        if (Cluster::knn >= 0) {
-            cerr << "WARNING: --knn ignored (only applies to Leiden)" << endl;
-            Cluster::knn = -1;
-        }
+        Cluster::knn = -1;  // kNN is a no-op for hierarchical
     }
 
     if (Cluster::lrt_softness > 0.0f)

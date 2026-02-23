@@ -140,7 +140,7 @@ public:
     static inline ClusterAlgorithm algorithm = ClusterAlgorithm::Hierarchical;
     static inline float D_cut = 0;
     static inline float lrt_softness = 0.0f;  // sigmoid steepness (0 = hard cutoff)
-    static inline int   knn = -1;             // -1 = disabled, 0 = auto, >0 = fixed k
+    static inline int   knn = 0;              // -1 = disabled, 0 = auto (default), >0 = fixed k
     static inline std::string file_prefix;
     static constexpr std::string_view file_counts              = "counts";
     static constexpr std::string_view file_clusters            = "clusters";
