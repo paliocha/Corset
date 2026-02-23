@@ -43,7 +43,7 @@ From: ubuntu:24.04
     mkdir build && cd build
     cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
              -DCMAKE_BUILD_TYPE=Release \
-             -DIGRAPH_OPENMP_SUPPORT=ON \
+             -DIGRAPH_OPENMP_SUPPORT=OFF \
              -DIGRAPH_ENABLE_TLS=ON \
              -DBUILD_SHARED_LIBS=ON
     make -j$(nproc)

@@ -590,6 +590,16 @@ int cluster_leiden(Cluster *c,
     const int ntrans = c->n_trans();
     const int nreads = c->n_reads();
 
+    // Suppress igraph's internal OMP: nested parallelism within igraph
+    // causes catastrophic thread contention with the outer SC parallel loop
+    // (32 outer threads × 32 inner igraph threads = 1024 threads on 32 cores).
+    // omp_set_num_threads is per-thread — does not affect other threads or
+    // hierarchical merge()'s nested parallelism in "both" mode.
+#if defined(_OPENMP)
+    int saved_nested_threads = omp_get_max_threads();
+    omp_set_num_threads(1);
+#endif
+
     // Always set up read-group data (needed for get_dist and count output)
     double t_setup = omp_get_wtime();
     c->setup_read_groups();
@@ -755,6 +765,12 @@ int cluster_leiden(Cluster *c,
         #pragma omp critical(print)
         cout << progress::ansi::yellow(buf) << endl;
     }
+
+    // Restore nested thread count for hierarchical merge()'s inner
+    // parallelism (used in "both" mode where cluster() runs after this).
+#if defined(_OPENMP)
+    omp_set_num_threads(saved_nested_threads);
+#endif
 
     return nedges;
 }
