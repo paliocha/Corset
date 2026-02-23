@@ -448,6 +448,14 @@ static vector<int> get_counts_leiden(Cluster *c,
         for (; weight > 0; weight--)
             counts[read_to_comm[rd][rand_r(&seed) % n_align]]++;
     }
+
+    // Add direct counts per Leiden community
+    for (int t = 0; t < ntrans; t++) {
+        Transcript *tr = c->get_tran(t);
+        if (tr->has_direct_counts())
+            counts[membership[t]] += tr->get_direct_count(sample);
+    }
+
     return counts;
 }
 

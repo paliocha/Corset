@@ -165,7 +165,8 @@ enum class ReadStatus { redistributed, counted, filtered };
 
 // Add an equivalence class into the ReadList.  Common to corset and
 // salmon EC file parsing.
-ReadStatus add_equivalence_class(ReadList *rList, int sample,
+ReadStatus add_equivalence_class(ReadList *rList, TranscriptList *tList,
+                                 int sample,
                                  vector<string> &transNames, int weight,
                                  std::default_random_engine &rng) {
     if (weight < Transcript::min_reads_for_link) {
@@ -174,8 +175,8 @@ ReadStatus add_equivalence_class(ReadList *rList, int sample,
             int this_weight = weight / static_cast<int>(transNames.size());
             if (static_cast<int>(rr) < (weight % static_cast<int>(transNames.size())))
                 this_weight++;
-            vector<string> single = {transNames[rr]};
-            rList->add_alignment(single, sample, this_weight);
+            Transcript *t = tList->insert(transNames[rr]);
+            t->add_direct_count(sample, this_weight);
         }
         return ReadStatus::redistributed;
     } else if (static_cast<int>(transNames.size()) <= Transcript::max_alignments ||
@@ -216,7 +217,7 @@ ReadList *read_corset_file(string all_file_names, TranscriptList *trans, int sam
             while (istream >> name)
                 transNames.push_back(name);
 
-            auto ret = add_equivalence_class(rList, sample, transNames, weight, rng);
+            auto ret = add_equivalence_class(rList, trans, sample, transNames, weight, rng);
             switch (ret) {
                 case ReadStatus::redistributed: reads_redistributed += weight; break;
                 case ReadStatus::counted:       reads_counted += weight;       break;
@@ -284,15 +285,14 @@ ReadList *read_salmon_eq_classes_file(string all_file_names, TranscriptList *tra
             int weight;
             istream >> weight;
 
-            // Fast path: use pre-resolved pointers, skip string round-trip
+            // Direct counts: redistribute weight without creating Read objects
             if (weight < Transcript::min_reads_for_link) {
                 std::shuffle(eq_trans.begin(), eq_trans.end(), rng);
                 for (int rr = 0; rr < eq_size; rr++) {
                     int this_weight = weight / eq_size;
                     if (rr < (weight % eq_size))
                         this_weight++;
-                    vector<Transcript *> single = {eq_trans[rr]};
-                    rList->add_alignment_ptrs(single, sample, this_weight);
+                    eq_trans[rr]->add_direct_count(sample, this_weight);
                 }
                 reads_redistributed += weight;
             } else if (eq_size <= Transcript::max_alignments || Transcript::max_alignments <= 0) {
@@ -744,11 +744,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    delete tList;
-
-    MakeClusters cList(rList, distance_thresholds, groups);
+    MakeClusters cList(rList, tList, distance_thresholds, groups);
     cList.set_reading_time(reading_time);
     cList.print_summary();
 
+    delete tList;
     return 0;
 }

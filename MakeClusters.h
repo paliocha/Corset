@@ -44,7 +44,8 @@ class MakeClusters {
     }
     void checkAgainstCurrentCluster(Transcript *trans);
 
-    void makeSuperClusters(std::vector<ReadList *> &readLists);
+    void makeSuperClusters(std::vector<ReadList *> &readLists,
+                           TranscriptList *tList);
     void processSuperClusters(std::map<float, std::string> &thresholds,
                               std::vector<int> &groups);
 
@@ -57,6 +58,7 @@ class MakeClusters {
 
 public:
     MakeClusters(std::vector<ReadList *> &readLists,
+                 TranscriptList *tList,
                  std::map<float, std::string> &thresholds,
                  std::vector<int> &groups);
 

@@ -19,7 +19,9 @@ void Transcript::add_read(Read *read) {
 }
 
 bool Transcript::reached_min_counts() const {
-    int counts = 0;
+    int counts = total_direct_counts();
+    if (counts >= min_counts)
+        return true;
     for (auto *r : reads_) {
         counts += r->get_weight();
         if (counts >= min_counts)

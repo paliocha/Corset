@@ -315,6 +315,16 @@ vector<int> Cluster::get_counts(int s) {
         for (; weight > 0; weight--)
             counts[read_to_clusters[rd][rand_r(&seed) % n_align]]++;
     }
+
+    // Add direct counts — each transcript maps to exactly one cluster group
+    for (int g = 0; g < nclusters; g++) {
+        for (int t_idx : groups[g]) {
+            Transcript *tr = get_tran(t_idx);
+            if (tr->has_direct_counts())
+                counts[g] += tr->get_direct_count(s);
+        }
+    }
+
     return counts;
 }
 
@@ -446,6 +456,15 @@ void Cluster::setup_read_groups() {
             int i = (*t1)->pos();
             read_groups[sample][i].push_back(r);
             read_group_sizes[i][sample] += read->get_weight();
+        }
+    }
+
+    // Include direct counts in read_group_sizes (preserves LRT denominators)
+    for (int t = 0; t < ntrans; t++) {
+        Transcript *tr = get_tran(t);
+        if (tr->has_direct_counts()) {
+            for (int s = 0; s < nsamples; s++)
+                read_group_sizes[t][s] += tr->get_direct_count(s);
         }
     }
 

@@ -25,6 +25,7 @@ class Transcript {
     std::string name_;
     int pos_ = 0;                  // position index set by Cluster::initialise_matrix()
     std::vector<Read *> reads_;    // back-references for min-count filtering
+    std::vector<int> direct_counts_;  // [sample] — lazy-init, for redistributed ECs
 
 public:
     Transcript()                          : name_("") {}
@@ -39,6 +40,23 @@ public:
     void remove();   // remove this transcript from its reads' alignment lists
 
     std::vector<Read *> *get_reads() { return &reads_; }
+
+    // Direct counts — per-sample counters for redistributed ECs (weight < -l).
+    // Lazy-initialized: only transcripts that receive redistributed reads allocate.
+    void add_direct_count(int sample, int weight) {
+        if (direct_counts_.empty())
+            direct_counts_.resize(samples, 0);
+        direct_counts_[sample] += weight;
+    }
+    [[nodiscard]] int get_direct_count(int sample) const {
+        return direct_counts_.empty() ? 0 : direct_counts_[sample];
+    }
+    [[nodiscard]] int total_direct_counts() const {
+        int sum = 0;
+        for (int c : direct_counts_) sum += c;
+        return sum;
+    }
+    [[nodiscard]] bool has_direct_counts() const { return !direct_counts_.empty(); }
 
     // Global configuration (set once from CLI args)
     static inline int samples          = 0;

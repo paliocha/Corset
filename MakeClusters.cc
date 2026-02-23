@@ -79,7 +79,8 @@ void MakeClusters::checkAgainstCurrentCluster(Transcript *trans) {
 
 // ── Stage 1: Build super-clusters from shared reads ─────────────────
 
-void MakeClusters::makeSuperClusters(vector<ReadList *> &readLists) {
+void MakeClusters::makeSuperClusters(vector<ReadList *> &readLists,
+                                     TranscriptList *tList) {
     progress::print_banner("Building super-clusters");
 
     if (!readLists.empty())
@@ -113,6 +114,19 @@ void MakeClusters::makeSuperClusters(vector<ReadList *> &readLists) {
     ec_progress.finish();
 
     readLists.clear();
+
+    // Create singleton clusters for transcripts with only direct counts
+    // (no linked reads, so not discovered during union-find above)
+    for (auto &[name, transcript] : *tList) {
+        if (transcript->has_direct_counts()
+                && transMap.find(transcript) == transMap.end()) {
+            Cluster *c = new Cluster();
+            c->add_tran(transcript);
+            c->clusterList_index = static_cast<int>(clusterList.size());
+            clusterList.push_back(c);
+        }
+    }
+
     transMap.clear();
 
     time_superclusters_ = omp_get_wtime() - t_start;
@@ -426,10 +440,11 @@ void MakeClusters::print_summary() const {
 // ── Constructor: orchestrate both stages ────────────────────────────
 
 MakeClusters::MakeClusters(vector<ReadList *> &readLists,
+                           TranscriptList *tList,
                            map<float, string> &thresholds,
                            vector<int> &groups) {
     // Stage 1: group transcripts sharing at least one read
-    makeSuperClusters(readLists);
+    makeSuperClusters(readLists, tList);
     // Stage 2: cluster within each super-cluster (hierarchical or Leiden)
     processSuperClusters(thresholds, groups);
 }
